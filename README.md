@@ -1,6 +1,12 @@
 # AudioMark
+A web-based audio annotation tool built for wildlife researchers, letting users label, tag, and organise field recordings for species identification and behavioural analysis.
+
+## Overview
+AudioMark gives researchers a browser-based workspace to upload audio recordings, visualise waveforms, and annotate segments with species and behaviour tags. Annotations can be cross-referenced against species occurrence data to support faster, more consistent review of field recordings.
 
 
+
+_______________________________________
 
 ## Getting started
 
