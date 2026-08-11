@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState, useEffect } from "react";
 import { AudioWaveform, Mail, Lock, Eye, EyeOff } from "lucide-react";
 import backgroundImage from "../assets/login_page_background.png";
 import { Link, useNavigate } from "react-router-dom";
@@ -17,6 +17,11 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);  
+
+
+  useEffect(() => {
+    document.title = "AudioMark — Log In";
+  }, []);
 
   const handleChange = (e) => {
     setForm({ ...form, [e.target.name]: e.target.value });
@@ -48,6 +53,7 @@ export default function LoginPage() {
         "auth/network-request-failed",
         "auth/internal-error",
         "auth/too-many-requests",
+        "auth/operation-not-allowed",
       ].includes(err.code);
 
       if (networkOrServerIssue) {
@@ -114,6 +120,10 @@ export default function LoginPage() {
             </div>
             {errors.password && <p className="text-xs text-red-500 mt-1">{errors.password}</p>}
           </div>
+
+          {errors.general && (
+            <p className="text-sm text-red-500 text-center">{errors.general}</p>
+          )}
 
           <button
             type="submit"

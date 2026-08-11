@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { AudioWaveform, User, Mail, Lock, Eye, EyeOff } from "lucide-react"; // icon components
 import backgroundImage from "../assets/login_page_background.png";
 import { Link } from "react-router-dom";
@@ -20,8 +20,14 @@ export default function RegisterPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [errors, setErrors] = useState({}); // holds validation error messages, keyed by field name (example: errors.password)
+  const [registered, setRegistered] = useState(false); // keep track of successful registration  
   const [submitting, setSubmitting] = useState(false);
+
   
+  useEffect(() => {
+    document.title = "AudioMark — Create Account";
+  }, []);
+
 
   // runs on every keystroke in any input form, copies the existing form object and overwrites just the target field
   const handleChange = (e) => {
@@ -48,10 +54,19 @@ export default function RegisterPage() {
       newErrors.lastName = "Required field.";
     }
 
+    // (?=.{4,}@)             - checks there are at least 4 characters between start and @
+    // [a-zA-Z0-9]+           — must start with a letter/digit, not a dot.
+    // (?:\.[a-zA-Z0-9]+)*    - zero or more "dot + alphanumeric block" segments
+    // @[a-zA-Z0-9]+          — after @, must be a letter or digit 
+    // (?:[-.][a-zA-Z0-9]+)*  — zero or more "dot/hyphen followed by alphanumeric block" segments
+    // \.[a-zA-Z0-9]+$        — finally one more dot + alphanumeric block at the end
+    const emailRegex = /^(?=.{4,}@)[a-zA-Z0-9]+(?:\.[a-zA-Z0-9]+)*@[a-zA-Z0-9]+(?:[-.][a-zA-Z0-9]+)*\.[a-zA-Z0-9]+$/;
     if (form.email === "") {
       newErrors.email = "Required field.";
+    } else if (!emailRegex.test(form.email)) {
+      newErrors.email = "Enter a valid email address.";
     }
-    
+  
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
       return;
@@ -78,7 +93,7 @@ export default function RegisterPage() {
         createdAt: new Date().toISOString(),
       });
 
-      // TODO: redirect to the dashboard/login now that the account exists
+      setRegistered(true);
       console.log("Registered new user:", uid);
 
     } catch (err) {
@@ -91,8 +106,7 @@ export default function RegisterPage() {
       } else {
         setErrors({ general: "Something went wrong. Please try again." });
       }
-    } finally {
-      setSubmitting(false);
+      setSubmitting(false); // button revert back to "Create account" so the user can retry
     }
   };
 
@@ -122,7 +136,7 @@ export default function RegisterPage() {
           Join AudioMark to start annotating and extracting audio effortlessly.
         </p>
 
-        <form onSubmit={handleSubmit} className="space-y-5">
+        <form onSubmit={handleSubmit} className="space-y-5" noValidate>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4"> 
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">First name</label>
@@ -132,7 +146,6 @@ export default function RegisterPage() {
                   name="firstName"
                   value={form.firstName}
                   onChange={handleChange}
-                  
                   placeholder="First name"
                   className="w-full pl-10 pr-3 py-2.5 rounded-xl border border-slate-200 text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                 />
@@ -149,7 +162,6 @@ export default function RegisterPage() {
                   name="lastName"
                   value={form.lastName}
                   onChange={handleChange}
-                  
                   placeholder="Last name"
                   className="w-full pl-10 pr-3 py-2.5 rounded-xl border border-slate-200 text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                 />
@@ -168,7 +180,6 @@ export default function RegisterPage() {
                 type="email"
                 name="email"
                 value={form.email}
-                
                 onChange={handleChange}
                 placeholder="Enter your email"
                 className="w-full pl-10 pr-3 py-2.5 rounded-xl border border-slate-200 text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
@@ -187,7 +198,6 @@ export default function RegisterPage() {
                 type={showPassword ? "text" : "password"}
                 name="password"
                 value={form.password}
-                
                 onChange={handleChange}
                 placeholder="Create a password"
                 className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
@@ -214,7 +224,6 @@ export default function RegisterPage() {
                 type={showConfirm ? "text" : "password"}
                 name="confirmPassword"
                 value={form.confirmPassword}
-                
                 onChange={handleChange}
                 placeholder="Confirm your password"
                 className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 text-sm placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
@@ -238,10 +247,15 @@ export default function RegisterPage() {
           )}
           <button
             type="submit"
-            disabled={submitting}
+            disabled={submitting || registered}
             className="w-full bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-semibold py-3 rounded-xl mt-2 hover:opacity-90 transition disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            {submitting ? "Creating account..." : "Create account"} {/* goes from Create account to Creating account and grey out button*/}
+            {/* if registered true: changes to Account registered and grey out button*/}
+            {/* else if submitting true: changes to Creating account and grey out button*/}
+            {/* else default Create account button*/}
+            {registered ? "Account registered" 
+                        : submitting ? "Creating account..."  
+                                     : "Create account"} 
           </button>
         </form>
 
