@@ -3,6 +3,9 @@ import { AudioWaveform, User, Mail, Lock, Eye, EyeOff } from "lucide-react"; // 
 import backgroundImage from "../assets/login_page_background.png";
 import { Link } from "react-router-dom";
 import Logo from '../components/Logo';
+import { createUserWithEmailAndPassword } from "firebase/auth";
+import { doc, setDoc } from "firebase/firestore";
+import { auth, db } from "../services/firebase";
 
 export default function RegisterPage() {
   // useState — "hook" that lets a function component hold data that can change over time and trigger a re-render when it does.
@@ -17,13 +20,15 @@ export default function RegisterPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [errors, setErrors] = useState({}); // holds validation error messages, keyed by field name (example: errors.password)
+  const [submitting, setSubmitting] = useState(false);
+  
 
   // runs on every keystroke in any input form, copies the existing form object and overwrites just the target field
   const handleChange = (e) => {
     setForm({ ...form, [e.target.name]: e.target.value });
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();   // e.preventDefault() stops the browser's default behavior of reloading the page on submit
     
     const newErrors = {};
@@ -47,10 +52,47 @@ export default function RegisterPage() {
       newErrors.email = "Required field.";
     }
     
-    setErrors(newErrors);
-    if (Object.keys(newErrors).length === 0) {
-      // To do later: link this to Firebase Auth createUserWithEmailAndPassword
-      console.log("Registering:", form);
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      return;
+    }
+
+    setSubmitting(true);
+    setErrors({});
+
+    try {
+      // Creates the Auth account. Throws auth/email-already-in-use automatically if that email is already registered.
+      const userCredential = await createUserWithEmailAndPassword(
+        auth,
+        form.email,
+        form.password
+      );
+
+      const uid = userCredential.user.uid;
+
+      // Use the Auth UID as the Firestore document ID, so each user's document has same unique ID.
+      await setDoc(doc(db, "users", uid), {
+        firstName: form.firstName,
+        lastName: form.lastName,
+        email: form.email,
+        createdAt: new Date().toISOString(),
+      });
+
+      // TODO: redirect to the dashboard/login now that the account exists
+      console.log("Registered new user:", uid);
+
+    } catch (err) {
+      if (err.code === "auth/email-already-in-use") {
+        setErrors({ email: "Email already in use" });
+      } else if (err.code === "auth/invalid-email") {
+        setErrors({ email: "Enter a valid email address." });
+      } else if (err.code === "auth/weak-password") {
+        setErrors({ password: "Password is too weak." });
+      } else {
+        setErrors({ general: "Something went wrong. Please try again." });
+      }
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -191,11 +233,15 @@ export default function RegisterPage() {
             )}
           </div>
 
+          {errors.general && (
+            <p className="text-sm text-red-500 text-center">{errors.general}</p>
+          )}
           <button
             type="submit"
-            className="w-full bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-semibold py-3 rounded-xl mt-2 hover:opacity-90 transition"
+            disabled={submitting}
+            className="w-full bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-semibold py-3 rounded-xl mt-2 hover:opacity-90 transition disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            Create account
+            {submitting ? "Creating account..." : "Create account"} {/* goes from Create account to Creating account and grey out button*/}
           </button>
         </form>
 

@@ -1,23 +1,28 @@
 import React, { useState } from "react";
 import { AudioWaveform, Mail, Lock, Eye, EyeOff } from "lucide-react";
 import backgroundImage from "../assets/login_page_background.png";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import Logo from '../components/Logo';
+import { auth } from "../services/firebase";
+import { signInWithEmailAndPassword } from "firebase/auth";
 
 export default function LoginPage() {
+  const navigate = useNavigate();
+
   const [form, setForm] = useState({
     email: "",
     password: "",
   });
-  const [rememberMe, setRememberMe] = useState(true);
+  
   const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState({});
+  const [submitting, setSubmitting] = useState(false);  
 
   const handleChange = (e) => {
     setForm({ ...form, [e.target.name]: e.target.value });
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     const newErrors = {};
     if (!form.email) {
@@ -26,14 +31,34 @@ export default function LoginPage() {
     if (!form.password) {
       newErrors.password = "Password is required.";
     }
-    setErrors(newErrors);
-    if (Object.keys(newErrors).length === 0) {
-      // TODO: wire this up to Firebase Auth signInWithEmailAndPassword
-      console.log("Logging in:", form, "Remember me:", rememberMe);
+    
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      return;
+    }
+
+    setSubmitting(true);
+    setErrors({});
+
+    try {
+      await signInWithEmailAndPassword(auth, form.email, form.password);
+      navigate("/dashboard");
+    } catch (err) {
+      const networkOrServerIssue = [
+        "auth/network-request-failed",
+        "auth/internal-error",
+        "auth/too-many-requests",
+      ].includes(err.code);
+
+      if (networkOrServerIssue) {
+        setErrors({ general: "Something went wrong. Please try again later." });
+      } else {
+        setErrors({ password: "Invalid credentials" });
+      }
+    } finally {
+      setSubmitting(false);
     }
   };
-
-  const waveHeights = [10, 18, 26, 16, 30, 20, 12, 24, 14, 28, 18, 10];
 
   return (
    <div className="min-h-screen w-full flex items-center justify-center relative overflow-hidden px-4 py-10"
@@ -92,9 +117,10 @@ export default function LoginPage() {
 
           <button
             type="submit"
-            className="w-full bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-semibold py-3 rounded-xl mt-2 hover:opacity-90 transition"
+            disabled={submitting}
+            className="w-full bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-semibold py-3 rounded-xl mt-2 hover:opacity-90 transition disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            Log in
+            {submitting ? "Logging in..." : "Log in"}
           </button>
 
           <div className="flex items-center justify-between">
