@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { onAuthStateChanged } from "firebase/auth";
+import { onAuthStateChanged, signOut } from "firebase/auth";
 import { Link, useNavigate } from "react-router-dom";
 import { collection, query, orderBy, onSnapshot, updateDoc, deleteDoc, doc } from "firebase/firestore";
-import { FileText, Plus } from "lucide-react";
+import { FileText, LogOut, Plus, UserCircle } from "lucide-react";
 import { auth, db } from "../services/firebase";
 import AddProjectModal from "../components/AddProjectModal";
 import ProjectActionsMenu from "../components/ProjectActionsMenu";
 import EditProjectModal from "../components/EditProjectModal";
 import DeleteProjectModal from "../components/DeleteProjectModal";
 import Logo from '../components/Logo';
+import backgroundImg from "../assets/login_page_background.png";
 
 const formatDuration = (seconds) => {
   if (!Number.isFinite(seconds)) return "00:00";
@@ -24,6 +25,7 @@ export default function DashboardPage() {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const [showAccountMenu, setShowAccountMenu] = useState(false);
   
   //Project action modals
   const [selectedProject, setSelectedProject] = useState(null);
@@ -131,28 +133,62 @@ export default function DashboardPage() {
     setSelectedProject(project);
   };
 
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      navigate("/login");
+    } catch (error) {
+      console.error("Error logging out:", error);
+      alert("Failed to log out");
+    }
+  };
+
   return (
     <div
       className="min-h-screen w-full px-4 py-8 sm:px-6 lg:px-10"
       style={{
-        backgroundImage: "",
+        backgroundImage: `url(${backgroundImg})`,
         backgroundSize: "cover",
         backgroundPosition: "center",
       }}
     >
       <div className="mx-auto max-w-[1280px]">
-        <header className="mb-6 flex flex-col gap-4 rounded-[28px] border border-slate-200/80 bg-white/75 p-4 shadow-[0_20px_60px_rgba(15,23,42,0.12)] backdrop-blur-xl sm:p-5 lg:flex-row lg:items-center lg:justify-between">
+        <header className="relative z-50 mb-6 flex flex-col gap-4 overflow-visible rounded-[28px] border border-slate-200/80 bg-white/75 p-4 shadow-[0_20px_60px_rgba(15,23,42,0.12)] backdrop-blur-xl sm:p-5 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-4">
               <Logo/>
           </div>
-          
-          
+
+          <div className="relative self-end lg:self-auto">
+            <button
+              type="button"
+              title={`Account: ${username}`}
+              aria-label={`Account: ${username}`}
+              aria-expanded={showAccountMenu}
+              onClick={() => setShowAccountMenu((isOpen) => !isOpen)}
+              className="rounded-full text-slate-600 transition hover:text-indigo-600"
+            >
+              <UserCircle className="h-9 w-9" strokeWidth={1.8} />
+            </button>
+
+            {showAccountMenu && (
+              <div className="absolute right-0 top-full z-[60] mt-2 w-44 rounded-xl border border-slate-200 bg-white p-1 shadow-lg">
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium text-red-600 transition hover:bg-red-50"
+                >
+                  <LogOut className="h-4 w-4" />
+                  Log out
+                </button>
+              </div>
+            )}
+          </div>
         </header>
 
-        <main className="rounded-[30px] border border-slate-200/80 bg-white/70 p-4 shadow-[0_20px_60px_rgba(15,23,42,0.1)] backdrop-blur-xl sm:p-6 lg:p-8">
-          <div className="mb-7 flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+        <main className="relative z-0 rounded-[30px] border border-slate-200/80 bg-white/70 p-4 shadow-[0_20px_60px_rgba(15,23,42,0.1)] backdrop-blur-xl sm:p-6 lg:p-8">
+          <div className="mb-7 flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <h2 className="mt-2 text-4xl font-black tracking-[-0.02em] text-slate-900 sm:text-5xl">
+              <h2 className="mt-2 text-4xl font-black text-slate-900 sm:text-5xl">
                 Welcome Back {username}
               </h2>
             </div>
@@ -196,7 +232,7 @@ export default function DashboardPage() {
                     <div className="flex-1">
                       <div className="flex items-center gap-4">
                         <div>
-                          <h3 className="mt-1 text-3xl font-black tracking-[-0.02em] text-slate-900 sm:text-[2.4rem]">
+                          <h3 className="mt-1 text-2xl font-black text-slate-900 sm:text-[2rem]">
                             {document.project_title}
                           </h3>
                         </div>
