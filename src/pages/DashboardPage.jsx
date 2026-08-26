@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { Link, useNavigate } from "react-router-dom";
 import { collection, query, orderBy, onSnapshot, updateDoc, deleteDoc, doc } from "firebase/firestore";
+import { deleteObject, ref } from "firebase/storage";
 import { FileText, LogOut, Plus, UserCircle } from "lucide-react";
-import { auth, db } from "../services/firebase";
+import { auth, db, storage } from "../services/firebase";
 import AddProjectModal from "../components/AddProjectModal";
 import ProjectActionsMenu from "../components/ProjectActionsMenu";
 import EditProjectModal from "../components/EditProjectModal";
@@ -118,6 +119,17 @@ export default function DashboardPage() {
         "projects",
         selectedProject.id
       );
+
+      if (selectedProject.storage_path) {
+        try {
+          await deleteObject(ref(storage, selectedProject.storage_path));
+        } catch (error) {
+          if (error.code !== "storage/object-not-found") {
+            throw error;
+          }
+        }
+      }
+
       await deleteDoc(projectRef);
       setShowDeleteModal(false);
       setSelectedProject(null);
