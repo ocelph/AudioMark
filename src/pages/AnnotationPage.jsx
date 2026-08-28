@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { auth, db } from "../services/firebase";
-import { doc, getDoc, collection, addDoc, updateDoc, serverTimestamp, onSnapshot, query, orderBy } from "firebase/firestore";
+import { doc, getDoc, collection, addDoc, updateDoc, deleteDoc, serverTimestamp, onSnapshot, query, orderBy } from "firebase/firestore";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
-import { Download, History, Share2, Maximize2, Search, Plus } from "lucide-react";
+import { Download, History, Share2, Maximize2, Search, Plus, X } from "lucide-react";
 
 // Default annotation classes shown in the "Annotation Class" picker.
 // Custom classes added via "+ Create New Label" get a color from PALETTE.
@@ -36,6 +36,8 @@ export default function AnnotationPage() {
   const [editStart, setEditStart] = useState(0);
   const [editEnd, setEditEnd] = useState(0);
   const [editComment, setEditComment] = useState("");
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [annotationToDelete, setAnnotationToDelete] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -191,6 +193,35 @@ export default function AnnotationPage() {
 
   const handleCancelEdit = () => {
     setIsEditing(false);
+  };
+
+  const handleClosePanel = () => {
+    setSelectedAnnotation(null);
+    setIsEditing(false);
+  };
+
+  const handleDeleteClick = (annotation) => {
+    setAnnotationToDelete(annotation);
+    setShowDeleteConfirm(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    try {
+      await deleteDoc(doc(db, "users", uid, "projects", projectId, "annotations", annotationToDelete.id));
+      if (selectedAnnotation?.id === annotationToDelete.id) {
+        setSelectedAnnotation(null);
+        setIsEditing(false);
+      }
+      setShowDeleteConfirm(false);
+      setAnnotationToDelete(null);
+    } catch (err) {
+      console.error("Failed to delete annotation:", err);
+    }
+  };
+
+  const handleCancelDelete = () => {
+    setShowDeleteConfirm(false);
+    setAnnotationToDelete(null);
   };
 
   if (loading) return (
@@ -389,6 +420,7 @@ export default function AnnotationPage() {
                       <th className="px-3 py-2">Label</th>
                       <th className="px-3 py-2">User</th>
                       <th className="px-3 py-2">Comments</th>
+                      <th className="px-3 py-2">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -425,6 +457,15 @@ export default function AnnotationPage() {
                               </div>
                             </td>
                             <td className="max-w-[220px] truncate px-3 py-2 text-slate-500">{ann.comment}</td>
+                            <td className="px-3 py-2">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleDeleteClick(ann); }}
+                                className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-500 transition"
+                                title="Delete"
+                              >
+                                🗑
+                              </button>
+                            </td>
                           </tr>
                         );
                       })}
@@ -437,7 +478,14 @@ export default function AnnotationPage() {
 
         {/* Right panel — Annotation Details */}
         <div className="w-80 flex-shrink-0 border-l border-slate-200 bg-white px-4 py-4">
-          <h2 className="mb-3 text-sm font-semibold text-slate-700">Annotation Details</h2>
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-slate-700">Annotation Details</h2>
+            {selectedAnnotation && (
+              <button onClick={handleClosePanel} className="text-slate-400 hover:text-slate-600 transition">
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
           {!selectedAnnotation ? (
             <p className="text-sm text-slate-400">Select an annotation from the table to view its details.</p>
           ) : !isEditing ? (
@@ -460,12 +508,20 @@ export default function AnnotationPage() {
                   {selectedAnnotation.comment || "—"}
                 </p>
               </div>
-              <button
-                onClick={handleEditOpen}
-                className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition"
-              >
-                Edit
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleEditOpen}
+                  className="flex-1 rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition"
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() => handleDeleteClick(selectedAnnotation)}
+                  className="flex-1 rounded-lg border border-red-200 py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition"
+                >
+                  Delete
+                </button>
+              </div>
             </div>
           ) : (
             <div className="flex flex-col gap-4">
@@ -532,6 +588,33 @@ export default function AnnotationPage() {
           )}
         </div>
       </div>
+
+      {/* Delete confirmation modal */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40">
+          <div className="w-96 rounded-2xl bg-white p-6 shadow-xl">
+            <h3 className="mb-2 text-lg font-semibold text-slate-800">Delete Annotation</h3>
+            <p className="mb-6 text-sm text-slate-500">
+              Are you sure you want to delete{" "}
+              <span className="font-medium text-slate-700">"{annotationToDelete?.label}"</span>? This cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={handleConfirmDelete}
+                className="flex-1 rounded-lg bg-red-600 py-2 text-sm font-medium text-white hover:bg-red-700 transition"
+              >
+                Delete
+              </button>
+              <button
+                onClick={handleCancelDelete}
+                className="flex-1 rounded-lg border border-slate-200 py-2 text-sm text-slate-600 hover:bg-slate-50 transition"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
