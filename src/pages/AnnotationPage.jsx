@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { auth, db } from "../services/firebase";
-import { doc, getDoc, collection, addDoc, serverTimestamp, onSnapshot, query, orderBy } from "firebase/firestore";
+import { doc, getDoc, collection, addDoc, updateDoc, serverTimestamp, onSnapshot, query, orderBy } from "firebase/firestore";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
 import { Download, History, Share2, Maximize2, Search, Plus } from "lucide-react";
@@ -165,17 +165,28 @@ export default function AnnotationPage() {
     setIsEditing(true);
   };
 
-  // Local-only for now — updates what's shown in the panel immediately.
-  // Persisting this to Firestore is wired up in the next commit (ADP-81).
-  const handleSaveEdit = () => {
-    setSelectedAnnotation({
-      ...selectedAnnotation,
-      label: editLabel.trim(),
-      startTime: parseFloat(editStart),
-      endTime: parseFloat(editEnd),
-      comment: editComment.trim(),
-    });
-    setIsEditing(false);
+  // Now persists to Firestore, then updates what's shown in the panel.
+  const handleSaveEdit = async () => {
+    const start = parseFloat(editStart);
+    const end = parseFloat(editEnd);
+    try {
+      await updateDoc(doc(db, "users", uid, "projects", projectId, "annotations", selectedAnnotation.id), {
+        label: editLabel.trim(),
+        startTime: start,
+        endTime: end,
+        comment: editComment.trim(),
+      });
+      setSelectedAnnotation({
+        ...selectedAnnotation,
+        label: editLabel.trim(),
+        startTime: start,
+        endTime: end,
+        comment: editComment.trim(),
+      });
+      setIsEditing(false);
+    } catch (err) {
+      console.error("Failed to update annotation:", err);
+    }
   };
 
   if (loading) return (
@@ -506,7 +517,7 @@ export default function AnnotationPage() {
                 Save
               </button>
               <p className="text-xs text-slate-400">
-                Cancel button is wired up in the next commit.
+                Changes are now saved to the database. Cancel button is wired up in the next commit.
               </p>
             </div>
           )}
