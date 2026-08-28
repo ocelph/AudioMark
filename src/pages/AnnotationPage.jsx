@@ -31,6 +31,7 @@ export default function AnnotationPage() {
   const [fileName, setFileName] = useState("");
   const [annotations, setAnnotations] = useState([]);
   const [selectedAnnotation, setSelectedAnnotation] = useState(null);
+  const [isEditing, setIsEditing] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -149,6 +150,11 @@ export default function AnnotationPage() {
 
   const handleSelectAnnotation = (annotation) => {
     setSelectedAnnotation(annotation);
+    setIsEditing(false);
+  };
+
+  const handleEditOpen = () => {
+    setIsEditing(true);
   };
 
   if (loading) return (
@@ -398,7 +404,7 @@ export default function AnnotationPage() {
           <h2 className="mb-3 text-sm font-semibold text-slate-700">Annotation Details</h2>
           {!selectedAnnotation ? (
             <p className="text-sm text-slate-400">Select an annotation from the table to view its details.</p>
-          ) : (
+          ) : !isEditing ? (
             <div className="flex flex-col gap-4">
               <div>
                 <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Start Time</label>
@@ -418,6 +424,18 @@ export default function AnnotationPage() {
                   {selectedAnnotation.comment || "—"}
                 </p>
               </div>
+              <button
+                onClick={handleEditOpen}
+                className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition"
+              >
+                Edit
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-4">
+              <p className="rounded-lg border border-dashed border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-600">
+                Edit mode is open. The actual editable fields are wired up in the next commit.
+              </p>
             </div>
           )}
         </div>
