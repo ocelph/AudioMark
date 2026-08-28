@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { auth, db } from "../services/firebase";
-import { doc, getDoc, collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, collection, addDoc, serverTimestamp, onSnapshot, query, orderBy } from "firebase/firestore";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
 import { Download, History, Share2, Maximize2, Search, Plus } from "lucide-react";
@@ -29,6 +29,8 @@ export default function AnnotationPage() {
   const [userInitials, setUserInitials] = useState("U");
   const [audioUrl, setAudioUrl] = useState(null);
   const [fileName, setFileName] = useState("");
+  const [annotations, setAnnotations] = useState([]);
+  const [searchTerm, setSearchTerm] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -73,6 +75,20 @@ export default function AnnotationPage() {
     };
     loadProject();
   }, [projectId, navigate]);
+
+  // Load annotations in real time (only once we know the uid)
+  useEffect(() => {
+    if (!uid) return;
+    const q = query(
+      collection(db, "users", uid, "projects", projectId, "annotations"),
+      orderBy("createdAt", "asc")
+    );
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setAnnotations(data);
+    });
+    return () => unsubscribe();
+  }, [uid, projectId]);
 
   // Init WaveSurfer — waveform rendering/region creation is a separate ticket;
   // this just wires the container up so it's ready.
@@ -297,8 +313,72 @@ export default function AnnotationPage() {
           </div>
 
           <div className="flex-1 overflow-y-auto px-6 py-4">
-            <h2 className="mb-3 text-sm font-semibold text-slate-700">Annotations</h2>
-            <p className="text-sm text-slate-400">Annotation list coming in the next commit (ADP-74).</p>
+            <div className="mb-3 flex items-center justify-between gap-4">
+              <h2 className="text-sm font-semibold text-slate-700">
+                Annotations ({annotations.length})
+              </h2>
+              <div className="flex items-center gap-2 rounded-lg border border-slate-200 px-2 py-1.5">
+                <Search className="h-4 w-4 text-slate-400" />
+                <input
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Search annotations..."
+                  className="text-sm outline-none"
+                />
+              </div>
+            </div>
+
+            {annotations.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-slate-400">
+                No annotations yet — use the form on the left to create one.
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-xl border border-slate-200">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2">Start Time</th>
+                      <th className="px-3 py-2">End Time</th>
+                      <th className="px-3 py-2">Label</th>
+                      <th className="px-3 py-2">User</th>
+                      <th className="px-3 py-2">Comments</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {annotations
+                      .filter((a) => {
+                        const term = searchTerm.trim().toLowerCase();
+                        if (!term) return true;
+                        return (
+                          (a.label || "").toLowerCase().includes(term) ||
+                          (a.comment || "").toLowerCase().includes(term)
+                        );
+                      })
+                      .map((ann) => {
+                        const dotColor = ann.annotationClass?.color || "#94a3b8";
+                        return (
+                          <tr key={ann.id} className="border-t border-slate-100 bg-white">
+                            <td className="px-3 py-2 text-slate-700">{ann.startTime}s</td>
+                            <td className="px-3 py-2 text-slate-700">{ann.endTime}s</td>
+                            <td className="px-3 py-2">
+                              <span className="flex items-center gap-2 text-slate-800">
+                                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: dotColor }} />
+                                {ann.label}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2">
+                              <div className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-100 text-[10px] font-semibold text-indigo-700">
+                                {userInitials}
+                              </div>
+                            </td>
+                            <td className="max-w-[220px] truncate px-3 py-2 text-slate-500">{ann.comment}</td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
 
