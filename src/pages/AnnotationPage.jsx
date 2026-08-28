@@ -30,6 +30,7 @@ export default function AnnotationPage() {
   const [audioUrl, setAudioUrl] = useState(null);
   const [fileName, setFileName] = useState("");
   const [annotations, setAnnotations] = useState([]);
+  const [selectedAnnotation, setSelectedAnnotation] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -144,6 +145,10 @@ export default function AnnotationPage() {
     } catch (err) {
       console.error("Failed to create annotation:", err);
     }
+  };
+
+  const handleSelectAnnotation = (annotation) => {
+    setSelectedAnnotation(annotation);
   };
 
   if (loading) return (
@@ -357,7 +362,13 @@ export default function AnnotationPage() {
                       .map((ann) => {
                         const dotColor = ann.annotationClass?.color || "#94a3b8";
                         return (
-                          <tr key={ann.id} className="border-t border-slate-100 bg-white">
+                          <tr
+                            key={ann.id}
+                            onClick={() => handleSelectAnnotation(ann)}
+                            className={`cursor-pointer border-t border-slate-100 transition hover:bg-slate-50 ${
+                              selectedAnnotation?.id === ann.id ? "bg-indigo-50/60" : "bg-white"
+                            }`}
+                          >
                             <td className="px-3 py-2 text-slate-700">{ann.startTime}s</td>
                             <td className="px-3 py-2 text-slate-700">{ann.endTime}s</td>
                             <td className="px-3 py-2">
@@ -382,10 +393,33 @@ export default function AnnotationPage() {
           </div>
         </div>
 
-        {/* Right panel — placeholder, real details added in a later commit (ADP-13) */}
+        {/* Right panel — Annotation Details */}
         <div className="w-80 flex-shrink-0 border-l border-slate-200 bg-white px-4 py-4">
           <h2 className="mb-3 text-sm font-semibold text-slate-700">Annotation Details</h2>
-          <p className="text-sm text-slate-400">Coming in a later commit.</p>
+          {!selectedAnnotation ? (
+            <p className="text-sm text-slate-400">Select an annotation from the table to view its details.</p>
+          ) : (
+            <div className="flex flex-col gap-4">
+              <div>
+                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Start Time</label>
+                <p className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800">{selectedAnnotation.startTime}s</p>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">End Time</label>
+                <p className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800">{selectedAnnotation.endTime}s</p>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Label</label>
+                <p className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800">{selectedAnnotation.label}</p>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
+                <p className="min-h-[72px] rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800">
+                  {selectedAnnotation.comment || "—"}
+                </p>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
