@@ -1,10 +1,19 @@
 import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { auth, db } from "../services/firebase";
-import { doc, getDoc } from "firebase/firestore";
+import { doc, getDoc, collection, addDoc, serverTimestamp } from "firebase/firestore";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
-import { Download, History, Share2, Maximize2 } from "lucide-react";
+import { Download, History, Share2, Maximize2, Search, Plus } from "lucide-react";
+
+// Default annotation classes shown in the "Annotation Class" picker.
+// Custom classes added via "+ Create New Label" get a color from PALETTE.
+const DEFAULT_CLASSES = [
+  { name: "Default Class", color: "#22c55e" },
+  { name: "Custom Label", color: "#3b82f6" },
+  { name: "Miscellaneous Sound", color: "#f97316" },
+];
+const PALETTE = ["#a855f7", "#ec4899", "#14b8a6", "#eab308", "#ef4444", "#06b6d4"];
 
 const getInitials = (nameOrEmail) => {
   if (!nameOrEmail) return "U";
@@ -26,6 +35,15 @@ export default function AnnotationPage() {
 
   const waveformRef = useRef(null);
   const wavesurferRef = useRef(null);
+
+  // Temporary manual annotation creation (stand-in for waveform-drag creation)
+  const [classes, setClasses] = useState(DEFAULT_CLASSES);
+  const [classSearch, setClassSearch] = useState("");
+  const [selectedClassIndex, setSelectedClassIndex] = useState(0);
+  const [newLabelName, setNewLabelName] = useState("");
+  const [createStart, setCreateStart] = useState("");
+  const [createEnd, setCreateEnd] = useState("");
+  const [createComment, setCreateComment] = useState("");
 
   // Load project (the project doc doubles as the "file" — one project = one recording)
   useEffect(() => {
@@ -81,6 +99,37 @@ export default function AnnotationPage() {
     return () => ws.destroy();
   }, [audioUrl, uid]);
 
+  const handleAddClass = () => {
+    const trimmed = newLabelName.trim();
+    if (!trimmed) return;
+    const color = PALETTE[classes.length % PALETTE.length];
+    setClasses((prev) => [...prev, { name: trimmed, color }]);
+    setSelectedClassIndex(classes.length);
+    setNewLabelName("");
+  };
+
+  const handleCreateAnnotation = async () => {
+    if (!uid) return;
+    const start = parseFloat(createStart);
+    const end = parseFloat(createEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+    try {
+      await addDoc(collection(db, "users", uid, "projects", projectId, "annotations"), {
+        startTime: start,
+        endTime: end,
+        label: classes[selectedClassIndex]?.name || "Default Class",
+        annotationClass: classes[selectedClassIndex],
+        comment: createComment.trim(),
+        createdAt: serverTimestamp(),
+      });
+      setCreateStart("");
+      setCreateEnd("");
+      setCreateComment("");
+    } catch (err) {
+      console.error("Failed to create annotation:", err);
+    }
+  };
+
   if (loading) return (
     <div className="flex h-screen items-center justify-center bg-slate-50">
       <p className="text-slate-500">Loading audio file...</p>
@@ -133,9 +182,95 @@ export default function AnnotationPage() {
 
       {/* Main content — static-width panels for now; dragging to resize comes in a later commit (ADP-84) */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left panel — placeholder, real form added in the next commit */}
-        <div className="w-72 flex-shrink-0 border-r border-slate-200 bg-white px-4 py-4">
-          <p className="text-sm text-slate-400">Annotation creation form coming in the next commit.</p>
+        {/* Left panel — temporary manual annotation creation (stand-in for waveform-drag creation) */}
+        <div className="w-72 flex-shrink-0 overflow-y-auto border-r border-slate-200 bg-white px-4 py-4">
+          <h2 className="mb-3 text-sm font-semibold text-slate-700">Timestamps</h2>
+          <div className="mb-4 grid grid-cols-2 gap-2">
+            <div>
+              <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Start (s)</label>
+              <input
+                type="number"
+                step="0.1"
+                value={createStart}
+                onChange={(e) => setCreateStart(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">End (s)</label>
+              <input
+                type="number"
+                step="0.1"
+                value={createEnd}
+                onChange={(e) => setCreateEnd(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
+              />
+            </div>
+          </div>
+
+          <h2 className="mb-2 mt-2 text-sm font-semibold text-slate-700">Annotation Class</h2>
+          <div className="mb-2 flex items-center gap-2 rounded-lg border border-slate-200 px-2 py-1.5">
+            <Search className="h-4 w-4 text-slate-400" />
+            <input
+              value={classSearch}
+              onChange={(e) => setClassSearch(e.target.value)}
+              placeholder="Search or select label"
+              className="w-full text-sm outline-none"
+            />
+          </div>
+          <div className="mb-2 flex flex-col gap-1">
+            {classes
+              .filter((c) => c.name.toLowerCase().includes(classSearch.trim().toLowerCase()))
+              .map((c) => {
+                const idx = classes.indexOf(c);
+                return (
+                  <button
+                    key={c.name}
+                    onClick={() => setSelectedClassIndex(idx)}
+                    className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition ${
+                      selectedClassIndex === idx ? "bg-indigo-50 text-indigo-700" : "hover:bg-slate-50 text-slate-700"
+                    }`}
+                  >
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: c.color }} />
+                    {c.name}
+                  </button>
+                );
+              })}
+          </div>
+          <div className="mb-4 flex gap-2">
+            <input
+              value={newLabelName}
+              onChange={(e) => setNewLabelName(e.target.value)}
+              placeholder="+ Create New Label"
+              className="w-full rounded-lg border border-dashed border-slate-300 px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
+              onKeyDown={(e) => e.key === "Enter" && handleAddClass()}
+            />
+            <button
+              onClick={handleAddClass}
+              className="rounded-lg border border-slate-200 px-2 py-1.5 text-slate-500 hover:bg-slate-50 transition"
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+          </div>
+
+          <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
+          <textarea
+            value={createComment}
+            onChange={(e) => setCreateComment(e.target.value)}
+            rows={3}
+            className="mb-4 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
+            placeholder="Add a note about this annotation..."
+          />
+
+          <button
+            onClick={handleCreateAnnotation}
+            className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition"
+          >
+            Create Annotation
+          </button>
+          <p className="mt-2 text-xs text-slate-400">
+            Enter a time range manually to create an annotation. Dragging directly on the waveform is a separate feature.
+          </p>
         </div>
 
         {/* Center — waveform + annotation list placeholder */}
