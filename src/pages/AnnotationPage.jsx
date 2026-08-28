@@ -165,6 +165,19 @@ export default function AnnotationPage() {
     setIsEditing(true);
   };
 
+  // Local-only for now — updates what's shown in the panel immediately.
+  // Persisting this to Firestore is wired up in the next commit (ADP-81).
+  const handleSaveEdit = () => {
+    setSelectedAnnotation({
+      ...selectedAnnotation,
+      label: editLabel.trim(),
+      startTime: parseFloat(editStart),
+      endTime: parseFloat(editEnd),
+      comment: editComment.trim(),
+    });
+    setIsEditing(false);
+  };
+
   if (loading) return (
     <div className="flex h-screen items-center justify-center bg-slate-50">
       <p className="text-slate-500">Loading audio file...</p>
@@ -486,8 +499,14 @@ export default function AnnotationPage() {
                 />
               </div>
 
-              <p className="rounded-lg border border-dashed border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-600">
-                Save/Cancel buttons are wired up in the next couple of commits.
+              <button
+                onClick={handleSaveEdit}
+                className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition"
+              >
+                Save
+              </button>
+              <p className="text-xs text-slate-400">
+                Cancel button is wired up in the next commit.
               </p>
             </div>
           )}
