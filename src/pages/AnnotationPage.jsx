@@ -21,6 +21,35 @@ const getInitials = (nameOrEmail) => {
   return base.slice(0, 2).toUpperCase();
 };
 
+// Shared validation for both the manual "create" form and the "edit" form.
+// Checks required fields, a valid time range, length limits, and one hard
+// edge case (exact duplicate time range — blocked).
+const validateAnnotationFields = ({ label, start, end, comment }, { annotations, excludeId }) => {
+  const errors = {};
+  const trimmedLabel = (label || "").trim();
+
+  if (!trimmedLabel) errors.label = "Label is required";
+  else if (trimmedLabel.length > 100) errors.label = "Label must be under 100 characters";
+
+  if (!Number.isFinite(start) || start < 0) errors.start = "Start time must be 0 or greater";
+  if (!Number.isFinite(end) || end <= start) errors.end = "End time must be greater than start time";
+
+  if (comment && comment.trim().length > 500) errors.comment = "Comment must be under 500 characters";
+
+  if (!errors.start && !errors.end) {
+    const duplicate = annotations.some(
+      (a) => a.id !== excludeId && a.startTime === start && a.endTime === end
+    );
+    if (duplicate) errors.end = "An annotation with this exact time range already exists";
+  }
+
+  return errors;
+};
+
+// Soft edge case — overlapping ranges are allowed, but we warn about them.
+const findOverlap = (annotations, start, end, excludeId) =>
+  annotations.find((a) => a.id !== excludeId && start < a.endTime && end > a.startTime);
+
 export default function AnnotationPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
@@ -54,6 +83,13 @@ export default function AnnotationPage() {
   const [createStart, setCreateStart] = useState("");
   const [createEnd, setCreateEnd] = useState("");
   const [createComment, setCreateComment] = useState("");
+  const [createErrors, setCreateErrors] = useState({});
+  const [createWarning, setCreateWarning] = useState("");
+  const [editErrors, setEditErrors] = useState({});
+  const [editWarning, setEditWarning] = useState("");
+  const [leftWidth, setLeftWidth] = useState(280);
+  const [rightWidth, setRightWidth] = useState(320);
+  const resizingRef = useRef(null); // "left" | "right" | null
 
   // Load project (the project doc doubles as the "file" — one project = one recording)
   useEffect(() => {
@@ -123,6 +159,26 @@ export default function AnnotationPage() {
     return () => ws.destroy();
   }, [audioUrl, uid]);
 
+  // Panel resizing (ADP-84) — drag the dividers between panels
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      if (resizingRef.current === "left") {
+        setLeftWidth(Math.min(480, Math.max(220, e.clientX)));
+      } else if (resizingRef.current === "right") {
+        setRightWidth(Math.min(480, Math.max(260, window.innerWidth - e.clientX)));
+      }
+    };
+    const handleMouseUp = () => {
+      resizingRef.current = null;
+    };
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, []);
+
   const handleAddClass = () => {
     const trimmed = newLabelName.trim();
     if (!trimmed) return;
@@ -136,12 +192,23 @@ export default function AnnotationPage() {
     if (!uid) return;
     const start = parseFloat(createStart);
     const end = parseFloat(createEnd);
-    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+    const label = classes[selectedClassIndex]?.name || "";
+
+    const errors = validateAnnotationFields(
+      { label, start, end, comment: createComment },
+      { annotations, excludeId: null }
+    );
+    setCreateErrors(errors);
+    if (Object.keys(errors).length > 0) return;
+
+    const overlap = findOverlap(annotations, start, end, null);
+    setCreateWarning(overlap ? `Heads up — this overlaps with "${overlap.label}".` : "");
+
     try {
       await addDoc(collection(db, "users", uid, "projects", projectId, "annotations"), {
         startTime: start,
         endTime: end,
-        label: classes[selectedClassIndex]?.name || "Default Class",
+        label,
         annotationClass: classes[selectedClassIndex],
         comment: createComment.trim(),
         createdAt: serverTimestamp(),
@@ -149,6 +216,7 @@ export default function AnnotationPage() {
       setCreateStart("");
       setCreateEnd("");
       setCreateComment("");
+      setCreateErrors({});
     } catch (err) {
       console.error("Failed to create annotation:", err);
     }
@@ -171,6 +239,17 @@ export default function AnnotationPage() {
   const handleSaveEdit = async () => {
     const start = parseFloat(editStart);
     const end = parseFloat(editEnd);
+
+    const errors = validateAnnotationFields(
+      { label: editLabel, start, end, comment: editComment },
+      { annotations, excludeId: selectedAnnotation.id }
+    );
+    setEditErrors(errors);
+    if (Object.keys(errors).length > 0) return;
+
+    const overlap = findOverlap(annotations, start, end, selectedAnnotation.id);
+    setEditWarning(overlap ? `Heads up — this overlaps with "${overlap.label}".` : "");
+
     try {
       await updateDoc(doc(db, "users", uid, "projects", projectId, "annotations", selectedAnnotation.id), {
         label: editLabel.trim(),
@@ -277,7 +356,7 @@ export default function AnnotationPage() {
       {/* Main content — static-width panels for now; dragging to resize comes in a later commit (ADP-84) */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left panel — temporary manual annotation creation (stand-in for waveform-drag creation) */}
-        <div className="w-72 flex-shrink-0 overflow-y-auto border-r border-slate-200 bg-white px-4 py-4">
+        <div style={{ width: leftWidth }} className="flex-shrink-0 overflow-y-auto border-r border-slate-200 bg-white px-4 py-4">
           <h2 className="mb-3 text-sm font-semibold text-slate-700">Timestamps</h2>
           <div className="mb-4 grid grid-cols-2 gap-2">
             <div>
@@ -287,7 +366,9 @@ export default function AnnotationPage() {
                 step="0.1"
                 value={createStart}
                 onChange={(e) => setCreateStart(e.target.value)}
-                className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
+                className={`w-full rounded-lg border px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${
+                  createErrors.start ? "border-red-400" : "border-slate-200"
+                }`}
               />
             </div>
             <div>
@@ -297,10 +378,14 @@ export default function AnnotationPage() {
                 step="0.1"
                 value={createEnd}
                 onChange={(e) => setCreateEnd(e.target.value)}
-                className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
+                className={`w-full rounded-lg border px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${
+                  createErrors.end ? "border-red-400" : "border-slate-200"
+                }`}
               />
             </div>
           </div>
+          {createErrors.start && <p className="mb-2 text-xs text-red-500">{createErrors.start}</p>}
+          {createErrors.end && <p className="mb-2 text-xs text-red-500">{createErrors.end}</p>}
 
           <h2 className="mb-2 mt-2 text-sm font-semibold text-slate-700">Annotation Class</h2>
           <div className="mb-2 flex items-center gap-2 rounded-lg border border-slate-200 px-2 py-1.5">
@@ -352,9 +437,13 @@ export default function AnnotationPage() {
             value={createComment}
             onChange={(e) => setCreateComment(e.target.value)}
             rows={3}
-            className="mb-4 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
+            className={`mb-2 w-full rounded-lg border px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${
+              createErrors.comment ? "border-red-400" : "border-slate-200"
+            }`}
             placeholder="Add a note about this annotation..."
           />
+          {createErrors.comment && <p className="mb-2 text-xs text-red-500">{createErrors.comment}</p>}
+          {createWarning && <p className="mb-2 text-xs text-amber-600">{createWarning}</p>}
 
           <button
             onClick={handleCreateAnnotation}
@@ -367,7 +456,13 @@ export default function AnnotationPage() {
           </p>
         </div>
 
-        {/* Center — waveform + annotation list placeholder */}
+        {/* Drag handle — resize left panel */}
+        <div
+          onMouseDown={() => (resizingRef.current = "left")}
+          className="w-1.5 flex-shrink-0 cursor-col-resize bg-slate-100 hover:bg-indigo-200 transition"
+        />
+
+        {/* Center — waveform + annotation list */}
         <div className="flex flex-1 flex-col overflow-hidden">
           <div className="border-b border-slate-200 bg-white px-6 py-4">
             <p className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-400">
@@ -476,8 +571,14 @@ export default function AnnotationPage() {
           </div>
         </div>
 
+        {/* Drag handle — resize right panel */}
+        <div
+          onMouseDown={() => (resizingRef.current = "right")}
+          className="w-1.5 flex-shrink-0 cursor-col-resize bg-slate-100 hover:bg-indigo-200 transition"
+        />
+
         {/* Right panel — Annotation Details */}
-        <div className="w-80 flex-shrink-0 border-l border-slate-200 bg-white px-4 py-4">
+        <div style={{ width: rightWidth }} className="flex-shrink-0 overflow-y-auto border-l border-slate-200 bg-white px-4 py-4">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-slate-700">Annotation Details</h2>
             {selectedAnnotation && (
@@ -533,7 +634,9 @@ export default function AnnotationPage() {
                     step="0.1"
                     value={editStart}
                     onChange={(e) => setEditStart(e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
+                    className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${
+                      editErrors.start ? "border-red-400" : "border-slate-200"
+                    }`}
                   />
                 </div>
                 <div>
@@ -543,10 +646,14 @@ export default function AnnotationPage() {
                     step="0.1"
                     value={editEnd}
                     onChange={(e) => setEditEnd(e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
+                    className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${
+                      editErrors.end ? "border-red-400" : "border-slate-200"
+                    }`}
                   />
                 </div>
               </div>
+              {editErrors.start && <p className="text-xs text-red-500">{editErrors.start}</p>}
+              {editErrors.end && <p className="text-xs text-red-500">{editErrors.end}</p>}
 
               <div>
                 <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Label *</label>
@@ -554,9 +661,12 @@ export default function AnnotationPage() {
                   type="text"
                   value={editLabel}
                   onChange={(e) => setEditLabel(e.target.value)}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
+                  className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${
+                    editErrors.label ? "border-red-400" : "border-slate-200"
+                  }`}
                   placeholder="e.g. Koala bellow call"
                 />
+                {editErrors.label && <p className="mt-1 text-xs text-red-500">{editErrors.label}</p>}
               </div>
 
               <div>
@@ -565,10 +675,15 @@ export default function AnnotationPage() {
                   value={editComment}
                   onChange={(e) => setEditComment(e.target.value)}
                   rows={3}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
+                  className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${
+                    editErrors.comment ? "border-red-400" : "border-slate-200"
+                  }`}
                   placeholder="Add a note about this annotation..."
                 />
+                {editErrors.comment && <p className="mt-1 text-xs text-red-500">{editErrors.comment}</p>}
               </div>
+
+              {editWarning && <p className="text-xs text-amber-600">{editWarning}</p>}
 
               <div className="flex gap-2">
                 <button
