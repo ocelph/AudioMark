@@ -32,6 +32,10 @@ export default function AnnotationPage() {
   const [annotations, setAnnotations] = useState([]);
   const [selectedAnnotation, setSelectedAnnotation] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
+  const [editLabel, setEditLabel] = useState("");
+  const [editStart, setEditStart] = useState(0);
+  const [editEnd, setEditEnd] = useState(0);
+  const [editComment, setEditComment] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -154,6 +158,10 @@ export default function AnnotationPage() {
   };
 
   const handleEditOpen = () => {
+    setEditLabel(selectedAnnotation.label);
+    setEditStart(selectedAnnotation.startTime);
+    setEditEnd(selectedAnnotation.endTime);
+    setEditComment(selectedAnnotation.comment || "");
     setIsEditing(true);
   };
 
@@ -433,8 +441,53 @@ export default function AnnotationPage() {
             </div>
           ) : (
             <div className="flex flex-col gap-4">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Start Time</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={editStart}
+                    onChange={(e) => setEditStart(e.target.value)}
+                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">End Time</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={editEnd}
+                    onChange={(e) => setEditEnd(e.target.value)}
+                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Label *</label>
+                <input
+                  type="text"
+                  value={editLabel}
+                  onChange={(e) => setEditLabel(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
+                  placeholder="e.g. Koala bellow call"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
+                <textarea
+                  value={editComment}
+                  onChange={(e) => setEditComment(e.target.value)}
+                  rows={3}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
+                  placeholder="Add a note about this annotation..."
+                />
+              </div>
+
               <p className="rounded-lg border border-dashed border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-600">
-                Edit mode is open. The actual editable fields are wired up in the next commit.
+                Save/Cancel buttons are wired up in the next couple of commits.
               </p>
             </div>
           )}
