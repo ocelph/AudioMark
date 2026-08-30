@@ -275,7 +275,8 @@ export default function AnnotationPage() {
       barRadius: 3,
       normalize: true,
       interact: true,
-      url: audioUrl,
+      // url: audioUrl,
+      url: "/sample.wav",
       plugins: [regions, spectrogram],
     });
 
@@ -406,13 +407,16 @@ export default function AnnotationPage() {
 
   const handlePlaySelection = () => {
     const region = activeRegionRef.current;
-    if (!region) {
+    const ws = wavesurferRef.current;
+
+    if (!region || !ws) {
       setCreateWarning("Drag across the waveform to select a region first.");
       return;
     }
 
     setCreateWarning("");
-    region.play();
+
+    ws.play(region.start, region.end);
   };
 
   // Panel resizing (ADP-84) — drag the dividers between panels
