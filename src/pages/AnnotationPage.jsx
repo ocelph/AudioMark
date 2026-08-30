@@ -182,6 +182,9 @@ export default function AnnotationPage() {
   const waveformRef = useRef(null);
   const spectrogramRef = useRef(null);
   const wavesurferRef = useRef(null);
+  const regionsRef = useRef(null);
+  const activeRegionRef = useRef(null);
+  const syncingRegionRef = useRef(false);
 
   // Temporary manual annotation creation (stand-in for waveform-drag creation)
   const [classes, setClasses] = useState(DEFAULT_CLASSES);
@@ -278,14 +281,51 @@ export default function AnnotationPage() {
 
     wavesurferRef.current = ws;
 
+    regionsRef.current = regions;
+
     const unsubReady = ws.on("ready", (loadedDuration) => {
       setDuration(loadedDuration);
       setCurrentTime(0);
       setAudioReady(true);
+
+      // Same WaveSurfer v7 pattern used in the standalone prototype:
+      // drag across the waveform to create an annotation region.
+      regions.enableDragSelection({
+        color: "rgba(99, 102, 241, 0.25)",
+      });
     });
 
     const unsubTime = ws.on("timeupdate", (time) => {
       setCurrentTime(time);
+    });
+
+    const syncCreateFormFromRegion = (region) => {
+      if (!region || syncingRegionRef.current) return;
+
+      activeRegionRef.current = region;
+      setCreateStart(Number(region.start.toFixed(3)));
+      setCreateEnd(Number(region.end.toFixed(3)));
+      setCreateErrors({});
+    };
+
+    const unsubRegionCreated = regions.on("region-created", (region) => {
+      // New-annotation mode keeps one active selection. If the user drags a
+      // second region, discard the previous temporary selection.
+      const previous = activeRegionRef.current;
+      if (previous && previous !== region) {
+        previous.remove();
+      }
+
+      syncCreateFormFromRegion(region);
+    });
+
+    const unsubRegionClicked = regions.on("region-clicked", (region, event) => {
+      event?.stopPropagation?.();
+      syncCreateFormFromRegion(region);
+    });
+
+    const unsubRegionUpdated = regions.on("region-updated", (region) => {
+      syncCreateFormFromRegion(region);
     });
 
     const unsubPlay = ws.on("play", () => setIsPlaying(true));
@@ -304,10 +344,15 @@ export default function AnnotationPage() {
     return () => {
       unsubReady?.();
       unsubTime?.();
+      unsubRegionCreated?.();
+      unsubRegionClicked?.();
+      unsubRegionUpdated?.();
       unsubPlay?.();
       unsubPause?.();
       unsubFinish?.();
       unsubError?.();
+      activeRegionRef.current = null;
+      regionsRef.current = null;
       wavesurferRef.current = null;
       ws.destroy();
     };
@@ -321,6 +366,53 @@ export default function AnnotationPage() {
     ws.setTime(0);
     setCurrentTime(0);
     setIsPlaying(false);
+  };
+
+  const clampToDuration = (time) => {
+    const numeric = Number(time);
+    if (!Number.isFinite(numeric)) return 0;
+    if (duration > 0) return Math.min(Math.max(0, numeric), duration);
+    return Math.max(0, numeric);
+  };
+
+  const updateActiveRegionFromTimestamps = (nextStart, nextEnd) => {
+    const region = activeRegionRef.current;
+    if (!region || !audioReady) return;
+
+    const start = clampToDuration(nextStart);
+    const end = clampToDuration(nextEnd);
+
+    // Do not ask WaveSurfer to render an invalid/zero-length selection.
+    if (end <= start) return;
+
+    syncingRegionRef.current = true;
+    region.setOptions({ start, end });
+    syncingRegionRef.current = false;
+  };
+
+  const handleCreateStartChange = (nextStart) => {
+    const start = clampToDuration(nextStart);
+    setCreateStart(start);
+    setCreateErrors((prev) => ({ ...prev, start: undefined }));
+    updateActiveRegionFromTimestamps(start, createEnd);
+  };
+
+  const handleCreateEndChange = (nextEnd) => {
+    const end = clampToDuration(nextEnd);
+    setCreateEnd(end);
+    setCreateErrors((prev) => ({ ...prev, end: undefined }));
+    updateActiveRegionFromTimestamps(createStart, end);
+  };
+
+  const handlePlaySelection = () => {
+    const region = activeRegionRef.current;
+    if (!region) {
+      setCreateWarning("Drag across the waveform to select a region first.");
+      return;
+    }
+
+    setCreateWarning("");
+    region.play();
   };
 
   // Panel resizing (ADP-84) — drag the dividers between panels
@@ -381,6 +473,12 @@ export default function AnnotationPage() {
       setCreateEnd(0);
       setCreateComment("");
       setCreateErrors({});
+      setCreateWarning("");
+
+      // The selected waveform region represented the annotation being created.
+      // Clear it after the annotation has been saved successfully.
+      activeRegionRef.current?.remove();
+      activeRegionRef.current = null;
     } catch (err) {
       console.error("Failed to create annotation:", err);
     }
@@ -525,13 +623,13 @@ export default function AnnotationPage() {
             <TimestampInput
               label="Start"
               value={createStart}
-              onChange={setCreateStart}
+              onChange={handleCreateStartChange}
               hasError={Boolean(createErrors.start)}
             />
             <TimestampInput
               label="End"
               value={createEnd}
-              onChange={setCreateEnd}
+              onChange={handleCreateEndChange}
               hasError={Boolean(createErrors.end)}
             />
           </div>
@@ -620,7 +718,7 @@ export default function AnnotationPage() {
                   Audio visualisation
                 </p>
                 <p className="mt-1 text-sm text-slate-500">
-                  Click the waveform to seek. Region drag selection will be connected next.
+                  Click to seek, or drag across the waveform to select a new annotation region.
                 </p>
               </div>
               <div className="whitespace-nowrap text-sm tabular-nums text-slate-500">
@@ -660,6 +758,13 @@ export default function AnnotationPage() {
                 className="rounded-lg border border-slate-200 px-5 py-2 text-sm text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
               >
                 ■ Stop
+              </button>
+              <button
+                onClick={handlePlaySelection}
+                disabled={!audioReady}
+                className="rounded-lg border border-slate-200 px-5 py-2 text-sm text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+              >
+                ▶ Play Selection
               </button>
               {!audioReady && !waveformError && (
                 <span className="text-xs text-slate-400">Loading waveform and spectrogram…</span>
