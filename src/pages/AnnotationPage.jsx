@@ -7,8 +7,8 @@ import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
 import Spectrogram from "wavesurfer.js/dist/plugins/spectrogram.js";
 import { Download, History, Share2, Maximize2, Search, Plus, X, Pencil, Trash2 } from "lucide-react";
 
-// Default annotation classes shown in the "Annotation Class" picker.
-// Custom classes added via "+ Create New Label" get a color from PALETTE.
+// Built-in annotation class choices.
+// Project-level custom labels are created and selected through the Custom Label modal.
 const DEFAULT_CLASSES = [
   { name: "Default Label", color: "#22c55e" },
   { name: "Custom Label", color: "#3b82f6" },
@@ -186,11 +186,18 @@ export default function AnnotationPage() {
   const activeRegionRef = useRef(null);
   const syncingRegionRef = useRef(false);
 
-  // Temporary manual annotation creation (stand-in for waveform-drag creation)
-  const [classes, setClasses] = useState(DEFAULT_CLASSES);
+  // Annotation class selection.
+  // Default and Miscellaneous are built-in classes.
+  // Custom labels are stored per project in Firestore and selected through a modal.
+  const [selectedClassType, setSelectedClassType] = useState("Default Label");
   const [classSearch, setClassSearch] = useState("");
-  const [selectedClassIndex, setSelectedClassIndex] = useState(0);
+  const [customLabels, setCustomLabels] = useState([]);
+  const [selectedCustomLabelId, setSelectedCustomLabelId] = useState("");
+  const [showCustomLabelModal, setShowCustomLabelModal] = useState(false);
+  const [customLabelSearch, setCustomLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
+  const [customLabelError, setCustomLabelError] = useState("");
+  const [isCreatingLabel, setIsCreatingLabel] = useState(false);
   const [createStart, setCreateStart] = useState(0);
   const [createEnd, setCreateEnd] = useState(0);
   const [createComment, setCreateComment] = useState("");
@@ -242,6 +249,29 @@ export default function AnnotationPage() {
       const data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
       setAnnotations(data);
     });
+    return () => unsubscribe();
+  }, [uid, projectId]);
+
+  // Load project-level custom labels in real time.
+  useEffect(() => {
+    if (!uid) return;
+
+    const labelsRef = collection(db, "users", uid, "projects", projectId, "labels");
+    const unsubscribe = onSnapshot(
+      labelsRef,
+      (snapshot) => {
+        const labels = snapshot.docs
+          .map((d) => ({ id: d.id, ...d.data() }))
+          .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+
+        setCustomLabels(labels);
+
+      },
+      (err) => {
+        console.error("Failed to load custom labels:", err);
+      }
+    );
+
     return () => unsubscribe();
   }, [uid, projectId]);
 
@@ -439,25 +469,152 @@ export default function AnnotationPage() {
     };
   }, []);
 
-  const handleAddClass = () => {
-    const trimmed = newLabelName.trim();
-    if (!trimmed) return;
-    const color = PALETTE[classes.length % PALETTE.length];
-    setClasses((prev) => [...prev, { name: trimmed, color }]);
-    setSelectedClassIndex(classes.length);
+  const selectedCustomLabel = customLabels.find(
+    (label) => label.id === selectedCustomLabelId
+  );
+
+  const selectedAnnotationClass =
+    selectedClassType === "Custom Label"
+      ? selectedCustomLabel
+        ? {
+          id: selectedCustomLabel.id,
+          name: selectedCustomLabel.name,
+          color: selectedCustomLabel.color || "#3b82f6",
+          type: "custom",
+        }
+        : null
+      : {
+        ...DEFAULT_CLASSES.find((item) => item.name === selectedClassType),
+        type: "default",
+      };
+
+  const normalizedClassSearch = classSearch.trim().toLowerCase();
+  const filteredDefaultClasses = DEFAULT_CLASSES.filter((annotationClass) =>
+    annotationClass.name.toLowerCase().includes(normalizedClassSearch)
+  );
+  const filteredCustomLabels = normalizedClassSearch
+    ? customLabels.filter((label) =>
+      (label.name || "").toLowerCase().includes(normalizedClassSearch)
+    )
+    : [];
+
+  const openCustomLabelModal = () => {
+    setCustomLabelSearch("");
     setNewLabelName("");
+    setCustomLabelError("");
+    setShowCustomLabelModal(true);
+  };
+
+  const closeCustomLabelModal = () => {
+    if (isCreatingLabel) return;
+    setShowCustomLabelModal(false);
+    setCustomLabelSearch("");
+    setNewLabelName("");
+    setCustomLabelError("");
+  };
+
+  const handleSelectClassType = (className) => {
+    setCreateErrors((prev) => ({ ...prev, label: undefined }));
+
+    if (className === "Custom Label") {
+      setSelectedClassType("Custom Label");
+      openCustomLabelModal();
+      return;
+    }
+
+    setSelectedClassType(className);
+  };
+
+  const handleSelectCustomLabel = (label) => {
+    setSelectedClassType("Custom Label");
+    setSelectedCustomLabelId(label.id);
+    setCreateErrors((prev) => ({ ...prev, label: undefined }));
+    setShowCustomLabelModal(false);
+    setCustomLabelSearch("");
+    setNewLabelName("");
+    setCustomLabelError("");
+  };
+
+  const handleCreateCustomLabel = async () => {
+    if (!uid) return;
+
+    const trimmed = newLabelName.trim();
+
+    if (!trimmed) {
+      setCustomLabelError("Enter a label name.");
+      return;
+    }
+
+    if (trimmed.length > 100) {
+      setCustomLabelError("Label must be under 100 characters.");
+      return;
+    }
+
+    const duplicate = customLabels.some(
+      (label) => (label.name || "").trim().toLowerCase() === trimmed.toLowerCase()
+    );
+
+    if (duplicate) {
+      setCustomLabelError("A custom label with this name already exists.");
+      return;
+    }
+
+    setIsCreatingLabel(true);
+    setCustomLabelError("");
+
+    try {
+      const color = PALETTE[customLabels.length % PALETTE.length];
+      const labelsRef = collection(db, "users", uid, "projects", projectId, "labels");
+
+      const docRef = await addDoc(labelsRef, {
+        name: trimmed,
+        color,
+        createdAt: serverTimestamp(),
+      });
+
+      // Select immediately; the real-time listener will populate the full list.
+      setSelectedClassType("Custom Label");
+      setSelectedCustomLabelId(docRef.id);
+      setCustomLabels((prev) =>
+        [
+          ...prev.filter((label) => label.id !== docRef.id),
+          { id: docRef.id, name: trimmed, color },
+        ].sort((a, b) => a.name.localeCompare(b.name))
+      );
+      setCreateErrors((prev) => ({ ...prev, label: undefined }));
+      setShowCustomLabelModal(false);
+      setCustomLabelSearch("");
+      setNewLabelName("");
+    } catch (err) {
+      console.error("Failed to create custom label:", err);
+      setCustomLabelError("Failed to create the label. Please try again.");
+    } finally {
+      setIsCreatingLabel(false);
+    }
   };
 
   const handleCreateAnnotation = async () => {
     if (!uid) return;
+
     const start = parseFloat(createStart);
     const end = parseFloat(createEnd);
-    const label = classes[selectedClassIndex]?.name || "";
+    const annotationClass = selectedAnnotationClass;
+    const label = annotationClass?.name || "";
 
     const errors = validateAnnotationFields(
       { label, start, end, comment: createComment },
       { annotations, excludeId: null }
     );
+
+    if (selectedClassType === "Custom Label" && !selectedCustomLabel) {
+      errors.label = "Select or create a custom label.";
+    }
+
+    if (duration > 0) {
+      if (start > duration) errors.start = "Start time cannot exceed the audio duration";
+      if (end > duration) errors.end = "End time cannot exceed the audio duration";
+    }
+
     setCreateErrors(errors);
     if (Object.keys(errors).length > 0) return;
 
@@ -469,10 +626,11 @@ export default function AnnotationPage() {
         startTime: start,
         endTime: end,
         label,
-        annotationClass: classes[selectedClassIndex],
+        annotationClass,
         comment: createComment.trim(),
         createdAt: serverTimestamp(),
       });
+
       setCreateStart(0);
       setCreateEnd(0);
       setCreateComment("");
@@ -618,9 +776,9 @@ export default function AnnotationPage() {
         </div>
       </div>
 
-      {/* Main content — static-width panels for now; dragging to resize comes in a later commit (ADP-84) */}
+      {/* Main content */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Left panel — temporary manual annotation creation (stand-in for waveform-drag creation) */}
+        {/* Left panel — create annotation */}
         <div style={{ width: leftWidth }} className="flex-shrink-0 overflow-y-auto border-r border-slate-200 bg-white px-4 py-4">
           <h2 className="mb-3 text-sm font-semibold text-slate-700">Timestamps</h2>
           <div className="mb-4 space-y-3">
@@ -641,48 +799,154 @@ export default function AnnotationPage() {
           {createErrors.end && <p className="mb-2 text-xs text-red-500">{createErrors.end}</p>}
 
           <h2 className="mb-2 mt-2 text-sm font-semibold text-slate-700">Annotation Class</h2>
-          <div className="mb-2 flex items-center gap-2 rounded-lg border border-slate-200 px-2 py-1.5">
-            <Search className="h-4 w-4 text-slate-400" />
+
+          <div className="mb-2 flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5 focus-within:ring-2 focus-within:ring-indigo-200">
+            <Search className="h-4 w-4 flex-shrink-0 text-slate-400" />
             <input
               value={classSearch}
               onChange={(e) => setClassSearch(e.target.value)}
               placeholder="Search or select label"
               className="w-full text-sm outline-none"
             />
+            {classSearch && (
+              <button
+                type="button"
+                onClick={() => setClassSearch("")}
+                className="rounded p-0.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                aria-label="Clear label search"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
+
           <div className="mb-2 flex flex-col gap-1">
-            {classes
-              .filter((c) => c.name.toLowerCase().includes(classSearch.trim().toLowerCase()))
-              .map((c) => {
-                const idx = classes.indexOf(c);
-                return (
-                  <button
-                    key={c.name}
-                    onClick={() => setSelectedClassIndex(idx)}
-                    className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition ${selectedClassIndex === idx ? "bg-indigo-50 text-indigo-700" : "hover:bg-slate-50 text-slate-700"
-                      }`}
-                  >
-                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: c.color }} />
-                    {c.name}
-                  </button>
-                );
-              })}
+            {filteredDefaultClasses.map((annotationClass) => {
+              const isSelected = selectedClassType === annotationClass.name;
+              const customSummary =
+                annotationClass.name === "Custom Label" && selectedCustomLabel
+                  ? selectedCustomLabel.name
+                  : null;
+
+              return (
+                <button
+                  key={annotationClass.name}
+                  type="button"
+                  onClick={() => handleSelectClassType(annotationClass.name)}
+                  className={`flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm transition ${isSelected
+                      ? "bg-indigo-50 text-indigo-700"
+                      : "text-slate-700 hover:bg-slate-50"
+                    }`}
+                >
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span
+                      className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                      style={{
+                        backgroundColor:
+                          annotationClass.name === "Custom Label" && selectedCustomLabel
+                            ? selectedCustomLabel.color || annotationClass.color
+                            : annotationClass.color,
+                      }}
+                    />
+                    <span>{annotationClass.name}</span>
+                  </span>
+
+                  {customSummary && (
+                    <span className="max-w-[120px] truncate text-xs text-indigo-500">
+                      {customSummary}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+
+            {filteredCustomLabels.map((label) => {
+              const isSelected =
+                selectedClassType === "Custom Label" && selectedCustomLabelId === label.id;
+
+              return (
+                <button
+                  key={label.id}
+                  type="button"
+                  onClick={() => {
+                    handleSelectCustomLabel(label);
+                    setClassSearch("");
+                  }}
+                  className={`flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm transition ${isSelected
+                      ? "bg-indigo-50 text-indigo-700"
+                      : "text-slate-700 hover:bg-slate-50"
+                    }`}
+                >
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span
+                      className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                      style={{ backgroundColor: label.color || "#3b82f6" }}
+                    />
+                    <span className="truncate">{label.name}</span>
+                  </span>
+                  <span className="text-[10px] uppercase tracking-wide text-slate-400">Custom</span>
+                </button>
+              );
+            })}
+
+            {normalizedClassSearch &&
+              filteredDefaultClasses.length === 0 &&
+              filteredCustomLabels.length === 0 && (
+                <p className="px-2 py-2 text-xs text-slate-400">No matching labels.</p>
+              )}
           </div>
-          <div className="mb-4 flex gap-2">
-            <input
-              value={newLabelName}
-              onChange={(e) => setNewLabelName(e.target.value)}
-              placeholder="+ Create New Label"
-              className="w-full rounded-lg border border-dashed border-slate-300 px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300"
-              onKeyDown={(e) => e.key === "Enter" && handleAddClass()}
-            />
-            <button
-              onClick={handleAddClass}
-              className="rounded-lg border border-slate-200 px-2 py-1.5 text-slate-500 hover:bg-slate-50 transition"
-            >
+
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedClassType("Custom Label");
+              openCustomLabelModal();
+            }}
+            className="mb-3 flex w-full items-center justify-between gap-2 rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-sm text-slate-500 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600"
+          >
+            <span className="flex items-center gap-2">
               <Plus className="h-4 w-4" />
-            </button>
-          </div>
+              Create New Label
+            </span>
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white">
+              <Plus className="h-4 w-4" />
+            </span>
+          </button>
+
+          {selectedClassType === "Custom Label" && selectedCustomLabel && (
+            <div
+              className={`mb-4 rounded-lg border px-3 py-2 ${createErrors.label ? "border-red-300 bg-red-50" : "border-slate-200 bg-slate-50"
+                }`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                    Selected custom label
+                  </p>
+                  <div className="mt-1 flex items-center gap-2">
+                    <span
+                      className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                      style={{ backgroundColor: selectedCustomLabel.color || "#3b82f6" }}
+                    />
+                    <span className="truncate text-sm font-medium text-slate-700">
+                      {selectedCustomLabel.name}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={openCustomLabelModal}
+                  className="flex-shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
+                >
+                  Change
+                </button>
+              </div>
+            </div>
+          )}
+
+          {createErrors.label && (
+            <p className="mb-2 text-xs text-red-500">{createErrors.label}</p>
+          )}
 
           <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
           <textarea
@@ -703,7 +967,7 @@ export default function AnnotationPage() {
             Save Annotation
           </button>
           <p className="mt-2 text-xs text-slate-400">
-            Set the time precisely here. Waveform region selection will populate these fields in the next step.
+            Drag across the waveform to populate the timestamps, then refine them here if needed.
           </p>
         </div>
 
@@ -870,8 +1134,7 @@ export default function AnnotationPage() {
           </div>
         </div>
 
-        {/* selectedAnnotation && isEditing && */}
-        {true && (
+        {selectedAnnotation && isEditing && (
           <>
             {/* Drag handle — resize edit panel */}
             <div
@@ -953,9 +1216,148 @@ export default function AnnotationPage() {
         )}
       </div>
 
+      {/* Custom label selection / creation modal */}
+      {showCustomLabelModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/20 px-4 backdrop-blur-sm">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="custom-label-modal-title"
+            className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl"
+          >
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <h3 id="custom-label-modal-title" className="text-lg font-semibold text-slate-800">
+                  Select Custom Label
+                </h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  Search existing project labels or create a new one.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeCustomLabelModal}
+                disabled={isCreatingLabel}
+                className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label="Close custom label panel"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mb-3 flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2">
+              <Search className="h-4 w-4 flex-shrink-0 text-slate-400" />
+              <input
+                value={customLabelSearch}
+                onChange={(e) => setCustomLabelSearch(e.target.value)}
+                placeholder="Search custom labels..."
+                className="w-full text-sm outline-none"
+                autoFocus
+              />
+            </div>
+
+            <div className="max-h-56 overflow-y-auto rounded-xl border border-slate-200">
+              {customLabels.filter((label) =>
+                (label.name || "")
+                  .toLowerCase()
+                  .includes(customLabelSearch.trim().toLowerCase())
+              ).length === 0 ? (
+                <div className="px-4 py-8 text-center text-sm text-slate-400">
+                  {customLabels.length === 0
+                    ? "No custom labels yet. Create the first one below."
+                    : "No labels match your search."}
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {customLabels
+                    .filter((label) =>
+                      (label.name || "")
+                        .toLowerCase()
+                        .includes(customLabelSearch.trim().toLowerCase())
+                    )
+                    .map((label) => {
+                      const isSelected = label.id === selectedCustomLabelId;
+
+                      return (
+                        <button
+                          key={label.id}
+                          type="button"
+                          onClick={() => handleSelectCustomLabel(label)}
+                          className={`flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-sm transition ${isSelected ? "bg-indigo-50" : "bg-white hover:bg-slate-50"
+                            }`}
+                        >
+                          <span className="flex min-w-0 items-center gap-3">
+                            <span
+                              className="h-3 w-3 flex-shrink-0 rounded-full"
+                              style={{ backgroundColor: label.color || "#3b82f6" }}
+                            />
+                            <span
+                              className={`truncate ${isSelected
+                                  ? "font-medium text-indigo-700"
+                                  : "text-slate-700"
+                                }`}
+                            >
+                              {label.name}
+                            </span>
+                          </span>
+                          {isSelected && (
+                            <span className="text-xs font-medium text-indigo-600">Selected</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                </div>
+              )}
+            </div>
+
+            <div className="my-5 border-t border-slate-200" />
+
+            <div>
+              <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">
+                Create New Label
+              </label>
+              <div className="flex gap-2">
+                <input
+                  value={newLabelName}
+                  onChange={(e) => {
+                    setNewLabelName(e.target.value);
+                    setCustomLabelError("");
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !isCreatingLabel) {
+                      e.preventDefault();
+                      handleCreateCustomLabel();
+                    }
+                  }}
+                  maxLength={100}
+                  placeholder="e.g. Koala bellow call"
+                  className={`min-w-0 flex-1 rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${customLabelError ? "border-red-400" : "border-slate-200"
+                    }`}
+                />
+                <button
+                  type="button"
+                  onClick={handleCreateCustomLabel}
+                  disabled={isCreatingLabel}
+                  className="flex flex-shrink-0 items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
+                >
+                  <Plus className="h-4 w-4" />
+                  {isCreatingLabel ? "Creating..." : "Create"}
+                </button>
+              </div>
+              {customLabelError && (
+                <p className="mt-1 text-xs text-red-500">{customLabelError}</p>
+              )}
+              <p className="mt-2 text-xs text-slate-400">
+                Custom labels are saved to this project and can be reused for future annotations.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Delete confirmation modal */}
       {showDeleteConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/20 backdrop-blur-sm">
           <div className="w-96 rounded-2xl bg-white p-6 shadow-xl">
             <h3 className="mb-2 text-lg font-semibold text-slate-800">Delete Annotation</h3>
             <p className="mb-6 text-sm text-slate-500">
