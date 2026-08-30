@@ -275,8 +275,8 @@ export default function AnnotationPage() {
       barRadius: 3,
       normalize: true,
       interact: true,
-      // url: audioUrl,
-      url: "/sample.wav",
+      url: audioUrl,
+      // url: "/sample.wav",
       plugins: [regions, spectrogram],
     });
 
