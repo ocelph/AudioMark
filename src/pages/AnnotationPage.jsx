@@ -4,16 +4,118 @@ import { auth, db } from "../services/firebase";
 import { doc, getDoc, collection, addDoc, updateDoc, deleteDoc, serverTimestamp, onSnapshot, query, orderBy } from "firebase/firestore";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
-import { Download, History, Share2, Maximize2, Search, Plus, X } from "lucide-react";
+import { Download, History, Share2, Maximize2, Search, Plus, X, Pencil, Trash2 } from "lucide-react";
 
 // Default annotation classes shown in the "Annotation Class" picker.
 // Custom classes added via "+ Create New Label" get a color from PALETTE.
 const DEFAULT_CLASSES = [
-  { name: "Default Class", color: "#22c55e" },
+  { name: "Default Label", color: "#22c55e" },
   { name: "Custom Label", color: "#3b82f6" },
-  { name: "Miscellaneous Sound", color: "#f97316" },
+  { name: "Miscellaneous", color: "#f97316" },
 ];
 const PALETTE = ["#a855f7", "#ec4899", "#14b8a6", "#eab308", "#ef4444", "#06b6d4"];
+
+
+const formatTimestamp = (seconds) => {
+  const safeSeconds = Number.isFinite(Number(seconds)) ? Math.max(0, Number(seconds)) : 0;
+  const totalMilliseconds = Math.round(safeSeconds * 1000);
+  const hours = Math.floor(totalMilliseconds / 3600000);
+  const minutes = Math.floor((totalMilliseconds % 3600000) / 60000);
+  const secs = Math.floor((totalMilliseconds % 60000) / 1000);
+  const milliseconds = totalMilliseconds % 1000;
+
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}.${String(milliseconds).padStart(3, "0")}`;
+};
+
+const splitTimestamp = (seconds) => {
+  const safeSeconds = Number.isFinite(Number(seconds)) ? Math.max(0, Number(seconds)) : 0;
+  const totalMilliseconds = Math.round(safeSeconds * 1000);
+
+  return {
+    hours: Math.floor(totalMilliseconds / 3600000),
+    minutes: Math.floor((totalMilliseconds % 3600000) / 60000),
+    seconds: Math.floor((totalMilliseconds % 60000) / 1000),
+    milliseconds: totalMilliseconds % 1000,
+  };
+};
+
+function TimestampInput({ label, value, onChange, hasError = false }) {
+  const parts = splitTimestamp(value);
+
+  const updatePart = (part, rawValue) => {
+    let nextValue = Number.parseInt(rawValue, 10);
+    if (!Number.isFinite(nextValue)) nextValue = 0;
+
+    if (part === "hours") nextValue = Math.max(0, nextValue);
+    if (part === "minutes" || part === "seconds") nextValue = Math.min(59, Math.max(0, nextValue));
+    if (part === "milliseconds") nextValue = Math.min(999, Math.max(0, nextValue));
+
+    const next = { ...parts, [part]: nextValue };
+    const totalSeconds =
+      next.hours * 3600 +
+      next.minutes * 60 +
+      next.seconds +
+      next.milliseconds / 1000;
+
+    onChange(Number(totalSeconds.toFixed(3)));
+  };
+
+  const inputClass = `min-w-0 rounded-md border bg-white px-1 py-1.5 text-center text-sm tabular-nums outline-none focus:ring-2 focus:ring-indigo-300 ${hasError ? "border-red-400" : "border-slate-200"
+    }`;
+
+  return (
+    <div>
+      <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">{label}</label>
+      <div className="grid grid-cols-[1fr_auto_1fr_auto_1fr_auto_1.25fr] items-center gap-1">
+        <input
+          aria-label={`${label} hours`}
+          title="Hours"
+          type="number"
+          min="0"
+          value={parts.hours}
+          onChange={(e) => updatePart("hours", e.target.value)}
+          className={inputClass}
+        />
+        <span className="text-slate-400">:</span>
+        <input
+          aria-label={`${label} minutes`}
+          title="Minutes"
+          type="number"
+          min="0"
+          max="59"
+          value={parts.minutes}
+          onChange={(e) => updatePart("minutes", e.target.value)}
+          className={inputClass}
+        />
+        <span className="text-slate-400">:</span>
+        <input
+          aria-label={`${label} seconds`}
+          title="Seconds"
+          type="number"
+          min="0"
+          max="59"
+          value={parts.seconds}
+          onChange={(e) => updatePart("seconds", e.target.value)}
+          className={inputClass}
+        />
+        <span className="text-slate-400">.</span>
+        <input
+          aria-label={`${label} milliseconds`}
+          title="Milliseconds"
+          type="number"
+          min="0"
+          max="999"
+          value={parts.milliseconds}
+          onChange={(e) => updatePart("milliseconds", e.target.value)}
+          className={inputClass}
+        />
+      </div>
+      <div className="mt-1 grid grid-cols-4 gap-2 text-center text-[10px] uppercase tracking-wide text-slate-400">
+        <span>HH</span><span>MM</span><span>SS</span><span>MS</span>
+      </div>
+    </div>
+  );
+}
 
 const getInitials = (nameOrEmail) => {
   if (!nameOrEmail) return "U";
@@ -80,8 +182,8 @@ export default function AnnotationPage() {
   const [classSearch, setClassSearch] = useState("");
   const [selectedClassIndex, setSelectedClassIndex] = useState(0);
   const [newLabelName, setNewLabelName] = useState("");
-  const [createStart, setCreateStart] = useState("");
-  const [createEnd, setCreateEnd] = useState("");
+  const [createStart, setCreateStart] = useState(0);
+  const [createEnd, setCreateEnd] = useState(0);
   const [createComment, setCreateComment] = useState("");
   const [createErrors, setCreateErrors] = useState({});
   const [createWarning, setCreateWarning] = useState("");
@@ -213,8 +315,8 @@ export default function AnnotationPage() {
         comment: createComment.trim(),
         createdAt: serverTimestamp(),
       });
-      setCreateStart("");
-      setCreateEnd("");
+      setCreateStart(0);
+      setCreateEnd(0);
       setCreateComment("");
       setCreateErrors({});
     } catch (err) {
@@ -222,16 +324,14 @@ export default function AnnotationPage() {
     }
   };
 
-  const handleSelectAnnotation = (annotation) => {
+  const handleEditOpen = (annotation) => {
     setSelectedAnnotation(annotation);
-    setIsEditing(false);
-  };
-
-  const handleEditOpen = () => {
-    setEditLabel(selectedAnnotation.label);
-    setEditStart(selectedAnnotation.startTime);
-    setEditEnd(selectedAnnotation.endTime);
-    setEditComment(selectedAnnotation.comment || "");
+    setEditLabel(annotation.label);
+    setEditStart(annotation.startTime);
+    setEditEnd(annotation.endTime);
+    setEditComment(annotation.comment || "");
+    setEditErrors({});
+    setEditWarning("");
     setIsEditing(true);
   };
 
@@ -257,26 +357,27 @@ export default function AnnotationPage() {
         endTime: end,
         comment: editComment.trim(),
       });
-      setSelectedAnnotation({
-        ...selectedAnnotation,
-        label: editLabel.trim(),
-        startTime: start,
-        endTime: end,
-        comment: editComment.trim(),
-      });
+      setSelectedAnnotation(null);
       setIsEditing(false);
+      setEditErrors({});
+      setEditWarning("");
     } catch (err) {
       console.error("Failed to update annotation:", err);
     }
   };
 
   const handleCancelEdit = () => {
+    setSelectedAnnotation(null);
     setIsEditing(false);
+    setEditErrors({});
+    setEditWarning("");
   };
 
   const handleClosePanel = () => {
     setSelectedAnnotation(null);
     setIsEditing(false);
+    setEditErrors({});
+    setEditWarning("");
   };
 
   const handleDeleteClick = (annotation) => {
@@ -358,31 +459,19 @@ export default function AnnotationPage() {
         {/* Left panel — temporary manual annotation creation (stand-in for waveform-drag creation) */}
         <div style={{ width: leftWidth }} className="flex-shrink-0 overflow-y-auto border-r border-slate-200 bg-white px-4 py-4">
           <h2 className="mb-3 text-sm font-semibold text-slate-700">Timestamps</h2>
-          <div className="mb-4 grid grid-cols-2 gap-2">
-            <div>
-              <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Start (s)</label>
-              <input
-                type="number"
-                step="0.1"
-                value={createStart}
-                onChange={(e) => setCreateStart(e.target.value)}
-                className={`w-full rounded-lg border px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${
-                  createErrors.start ? "border-red-400" : "border-slate-200"
-                }`}
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">End (s)</label>
-              <input
-                type="number"
-                step="0.1"
-                value={createEnd}
-                onChange={(e) => setCreateEnd(e.target.value)}
-                className={`w-full rounded-lg border px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${
-                  createErrors.end ? "border-red-400" : "border-slate-200"
-                }`}
-              />
-            </div>
+          <div className="mb-4 space-y-3">
+            <TimestampInput
+              label="Start"
+              value={createStart}
+              onChange={setCreateStart}
+              hasError={Boolean(createErrors.start)}
+            />
+            <TimestampInput
+              label="End"
+              value={createEnd}
+              onChange={setCreateEnd}
+              hasError={Boolean(createErrors.end)}
+            />
           </div>
           {createErrors.start && <p className="mb-2 text-xs text-red-500">{createErrors.start}</p>}
           {createErrors.end && <p className="mb-2 text-xs text-red-500">{createErrors.end}</p>}
@@ -406,9 +495,8 @@ export default function AnnotationPage() {
                   <button
                     key={c.name}
                     onClick={() => setSelectedClassIndex(idx)}
-                    className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition ${
-                      selectedClassIndex === idx ? "bg-indigo-50 text-indigo-700" : "hover:bg-slate-50 text-slate-700"
-                    }`}
+                    className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition ${selectedClassIndex === idx ? "bg-indigo-50 text-indigo-700" : "hover:bg-slate-50 text-slate-700"
+                      }`}
                   >
                     <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: c.color }} />
                     {c.name}
@@ -437,9 +525,8 @@ export default function AnnotationPage() {
             value={createComment}
             onChange={(e) => setCreateComment(e.target.value)}
             rows={3}
-            className={`mb-2 w-full rounded-lg border px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${
-              createErrors.comment ? "border-red-400" : "border-slate-200"
-            }`}
+            className={`mb-2 w-full rounded-lg border px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${createErrors.comment ? "border-red-400" : "border-slate-200"
+              }`}
             placeholder="Add a note about this annotation..."
           />
           {createErrors.comment && <p className="mb-2 text-xs text-red-500">{createErrors.comment}</p>}
@@ -449,10 +536,10 @@ export default function AnnotationPage() {
             onClick={handleCreateAnnotation}
             className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition"
           >
-            Create Annotation
+            Save Annotation
           </button>
           <p className="mt-2 text-xs text-slate-400">
-            Enter a time range manually to create an annotation. Dragging directly on the waveform is a separate feature.
+            Set the time precisely here. Waveform region selection will populate these fields in the next step.
           </p>
         </div>
 
@@ -533,13 +620,10 @@ export default function AnnotationPage() {
                         return (
                           <tr
                             key={ann.id}
-                            onClick={() => handleSelectAnnotation(ann)}
-                            className={`cursor-pointer border-t border-slate-100 transition hover:bg-slate-50 ${
-                              selectedAnnotation?.id === ann.id ? "bg-indigo-50/60" : "bg-white"
-                            }`}
+                            className="border-t border-slate-100 bg-white transition hover:bg-slate-50"
                           >
-                            <td className="px-3 py-2 text-slate-700">{ann.startTime}s</td>
-                            <td className="px-3 py-2 text-slate-700">{ann.endTime}s</td>
+                            <td className="px-3 py-2 text-slate-700 tabular-nums">{formatTimestamp(ann.startTime)}</td>
+                            <td className="px-3 py-2 text-slate-700 tabular-nums">{formatTimestamp(ann.endTime)}</td>
                             <td className="px-3 py-2">
                               <span className="flex items-center gap-2 text-slate-800">
                                 <span className="h-2 w-2 rounded-full" style={{ backgroundColor: dotColor }} />
@@ -553,13 +637,24 @@ export default function AnnotationPage() {
                             </td>
                             <td className="max-w-[220px] truncate px-3 py-2 text-slate-500">{ann.comment}</td>
                             <td className="px-3 py-2">
-                              <button
-                                onClick={(e) => { e.stopPropagation(); handleDeleteClick(ann); }}
-                                className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-500 transition"
-                                title="Delete"
-                              >
-                                🗑
-                              </button>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={() => handleEditOpen(ann)}
+                                  className="rounded-lg p-1.5 text-slate-400 hover:bg-indigo-50 hover:text-indigo-600 transition"
+                                  title="Edit annotation"
+                                  aria-label={`Edit ${ann.label || "annotation"}`}
+                                >
+                                  <Pencil className="h-4 w-4" />
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteClick(ann)}
+                                  className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-500 transition"
+                                  title="Delete annotation"
+                                  aria-label={`Delete ${ann.label || "annotation"}`}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -571,137 +666,87 @@ export default function AnnotationPage() {
           </div>
         </div>
 
-        {/* Drag handle — resize right panel */}
-        <div
-          onMouseDown={() => (resizingRef.current = "right")}
-          className="w-1.5 flex-shrink-0 cursor-col-resize bg-slate-100 hover:bg-indigo-200 transition"
-        />
+        {/* selectedAnnotation && isEditing && */}
+        {true && (
+          <>
+            {/* Drag handle — resize edit panel */}
+            <div
+              onMouseDown={() => (resizingRef.current = "right")}
+              className="w-1.5 flex-shrink-0 cursor-col-resize bg-slate-100 hover:bg-indigo-200 transition"
+            />
 
-        {/* Right panel — Annotation Details */}
-        <div style={{ width: rightWidth }} className="flex-shrink-0 overflow-y-auto border-l border-slate-200 bg-white px-4 py-4">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-slate-700">Annotation Details</h2>
-            {selectedAnnotation && (
-              <button onClick={handleClosePanel} className="text-slate-400 hover:text-slate-600 transition">
-                <X className="h-4 w-4" />
-              </button>
-            )}
-          </div>
-          {!selectedAnnotation ? (
-            <p className="text-sm text-slate-400">Select an annotation from the table to view its details.</p>
-          ) : !isEditing ? (
-            <div className="flex flex-col gap-4">
-              <div>
-                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Start Time</label>
-                <p className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800">{selectedAnnotation.startTime}s</p>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">End Time</label>
-                <p className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800">{selectedAnnotation.endTime}s</p>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Label</label>
-                <p className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800">{selectedAnnotation.label}</p>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
-                <p className="min-h-[72px] rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800">
-                  {selectedAnnotation.comment || "—"}
-                </p>
-              </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={handleEditOpen}
-                  className="flex-1 rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition"
-                >
-                  Edit
-                </button>
-                <button
-                  onClick={() => handleDeleteClick(selectedAnnotation)}
-                  className="flex-1 rounded-lg border border-red-200 py-2 text-sm font-medium text-red-600 hover:bg-red-50 transition"
-                >
-                  Delete
+            {/* Right panel — only opens after Edit is selected from the annotation list */}
+            <div style={{ width: rightWidth }} className="flex-shrink-0 overflow-y-auto border-l border-slate-200 bg-white px-4 py-4">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-slate-700">Edit Annotation</h2>
+                <button onClick={handleClosePanel} className="text-slate-400 hover:text-slate-600 transition" aria-label="Close edit panel">
+                  <X className="h-4 w-4" />
                 </button>
               </div>
-            </div>
-          ) : (
-            <div className="flex flex-col gap-4">
-              <div className="grid grid-cols-2 gap-2">
+
+              <div className="flex flex-col gap-4">
+                <TimestampInput
+                  label="Start Time"
+                  value={editStart}
+                  onChange={setEditStart}
+                  hasError={Boolean(editErrors.start)}
+                />
+                {editErrors.start && <p className="text-xs text-red-500">{editErrors.start}</p>}
+
+                <TimestampInput
+                  label="End Time"
+                  value={editEnd}
+                  onChange={setEditEnd}
+                  hasError={Boolean(editErrors.end)}
+                />
+                {editErrors.end && <p className="text-xs text-red-500">{editErrors.end}</p>}
+
                 <div>
-                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Start Time</label>
+                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Label *</label>
                   <input
-                    type="number"
-                    step="0.1"
-                    value={editStart}
-                    onChange={(e) => setEditStart(e.target.value)}
-                    className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${
-                      editErrors.start ? "border-red-400" : "border-slate-200"
-                    }`}
+                    type="text"
+                    value={editLabel}
+                    onChange={(e) => setEditLabel(e.target.value)}
+                    className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${editErrors.label ? "border-red-400" : "border-slate-200"
+                      }`}
+                    placeholder="e.g. Koala bellow call"
                   />
+                  {editErrors.label && <p className="mt-1 text-xs text-red-500">{editErrors.label}</p>}
                 </div>
+
                 <div>
-                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">End Time</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={editEnd}
-                    onChange={(e) => setEditEnd(e.target.value)}
-                    className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${
-                      editErrors.end ? "border-red-400" : "border-slate-200"
-                    }`}
+                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
+                  <textarea
+                    value={editComment}
+                    onChange={(e) => setEditComment(e.target.value)}
+                    rows={4}
+                    className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${editErrors.comment ? "border-red-400" : "border-slate-200"
+                      }`}
+                    placeholder="Add a note about this annotation..."
                   />
+                  {editErrors.comment && <p className="mt-1 text-xs text-red-500">{editErrors.comment}</p>}
+                </div>
+
+                {editWarning && <p className="text-xs text-amber-600">{editWarning}</p>}
+
+                <div className="flex gap-2 pt-2">
+                  <button
+                    onClick={handleSaveEdit}
+                    className="flex-1 rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition"
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={handleCancelEdit}
+                    className="flex-1 rounded-lg border border-slate-200 py-2 text-sm text-slate-600 hover:bg-slate-50 transition"
+                  >
+                    Cancel
+                  </button>
                 </div>
               </div>
-              {editErrors.start && <p className="text-xs text-red-500">{editErrors.start}</p>}
-              {editErrors.end && <p className="text-xs text-red-500">{editErrors.end}</p>}
-
-              <div>
-                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Label *</label>
-                <input
-                  type="text"
-                  value={editLabel}
-                  onChange={(e) => setEditLabel(e.target.value)}
-                  className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${
-                    editErrors.label ? "border-red-400" : "border-slate-200"
-                  }`}
-                  placeholder="e.g. Koala bellow call"
-                />
-                {editErrors.label && <p className="mt-1 text-xs text-red-500">{editErrors.label}</p>}
-              </div>
-
-              <div>
-                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
-                <textarea
-                  value={editComment}
-                  onChange={(e) => setEditComment(e.target.value)}
-                  rows={3}
-                  className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${
-                    editErrors.comment ? "border-red-400" : "border-slate-200"
-                  }`}
-                  placeholder="Add a note about this annotation..."
-                />
-                {editErrors.comment && <p className="mt-1 text-xs text-red-500">{editErrors.comment}</p>}
-              </div>
-
-              {editWarning && <p className="text-xs text-amber-600">{editWarning}</p>}
-
-              <div className="flex gap-2">
-                <button
-                  onClick={handleSaveEdit}
-                  className="flex-1 rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition"
-                >
-                  Save
-                </button>
-                <button
-                  onClick={handleCancelEdit}
-                  className="flex-1 rounded-lg border border-slate-200 py-2 text-sm text-slate-600 hover:bg-slate-50 transition"
-                >
-                  Cancel
-                </button>
-              </div>
             </div>
-          )}
-        </div>
+          </>
+        )}
       </div>
 
       {/* Delete confirmation modal */}
