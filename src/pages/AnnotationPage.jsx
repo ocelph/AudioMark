@@ -4,6 +4,7 @@ import { auth, db } from "../services/firebase";
 import { doc, getDoc, collection, addDoc, updateDoc, deleteDoc, serverTimestamp, onSnapshot, query, orderBy } from "firebase/firestore";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
+import Spectrogram from "wavesurfer.js/dist/plugins/spectrogram.js";
 import { Download, History, Share2, Maximize2, Search, Plus, X, Pencil, Trash2 } from "lucide-react";
 
 // Default annotation classes shown in the "Annotation Class" picker.
@@ -171,10 +172,15 @@ export default function AnnotationPage() {
   const [annotationToDelete, setAnnotationToDelete] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [audioReady, setAudioReady] = useState(false);
+  const [waveformError, setWaveformError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   const waveformRef = useRef(null);
+  const spectrogramRef = useRef(null);
   const wavesurferRef = useRef(null);
 
   // Temporary manual annotation creation (stand-in for waveform-drag creation)
@@ -236,30 +242,86 @@ export default function AnnotationPage() {
     return () => unsubscribe();
   }, [uid, projectId]);
 
-  // Init WaveSurfer — waveform rendering/region creation is a separate ticket;
-  // this just wires the container up so it's ready.
+  // Initialise the shared WaveSurfer instance used by both visualisations.
+  // The Spectrogram plugin is attached to the same instance, so its playback
+  // position stays synchronised with the waveform automatically.
   useEffect(() => {
-    if (!audioUrl || !waveformRef.current || !uid) return;
+    if (!audioUrl || !waveformRef.current || !spectrogramRef.current || !uid) return;
+
+    setAudioReady(false);
+    setWaveformError("");
+    setCurrentTime(0);
+    setDuration(0);
 
     const regions = RegionsPlugin.create();
+    const spectrogram = Spectrogram.create({
+      container: spectrogramRef.current,
+      labels: true,
+      height: 180,
+    });
+
     const ws = WaveSurfer.create({
       container: waveformRef.current,
       waveColor: "rgba(99, 102, 241, 0.4)",
       progressColor: "#6366f1",
       cursorColor: "#1e1b4b",
-      height: 120,
+      cursorWidth: 2,
+      height: 130,
       barWidth: 2,
       barGap: 1,
       barRadius: 3,
+      normalize: true,
+      interact: true,
       url: audioUrl,
-      plugins: [regions],
+      plugins: [regions, spectrogram],
     });
-    wavesurferRef.current = ws;
-    ws.on("play", () => setIsPlaying(true));
-    ws.on("pause", () => setIsPlaying(false));
 
-    return () => ws.destroy();
+    wavesurferRef.current = ws;
+
+    const unsubReady = ws.on("ready", (loadedDuration) => {
+      setDuration(loadedDuration);
+      setCurrentTime(0);
+      setAudioReady(true);
+    });
+
+    const unsubTime = ws.on("timeupdate", (time) => {
+      setCurrentTime(time);
+    });
+
+    const unsubPlay = ws.on("play", () => setIsPlaying(true));
+    const unsubPause = ws.on("pause", () => setIsPlaying(false));
+    const unsubFinish = ws.on("finish", () => {
+      setIsPlaying(false);
+      setCurrentTime(ws.getDuration());
+    });
+
+    const unsubError = ws.on("error", (err) => {
+      console.error("WaveSurfer failed to load audio:", err);
+      setAudioReady(false);
+      setWaveformError("Unable to load the audio visualisation.");
+    });
+
+    return () => {
+      unsubReady?.();
+      unsubTime?.();
+      unsubPlay?.();
+      unsubPause?.();
+      unsubFinish?.();
+      unsubError?.();
+      wavesurferRef.current = null;
+      ws.destroy();
+    };
   }, [audioUrl, uid]);
+
+  const handleStopPlayback = () => {
+    const ws = wavesurferRef.current;
+    if (!ws) return;
+
+    ws.pause();
+    ws.setTime(0);
+    setCurrentTime(0);
+    setIsPlaying(false);
+  };
 
   // Panel resizing (ADP-84) — drag the dividers between panels
   useEffect(() => {
@@ -552,23 +614,56 @@ export default function AnnotationPage() {
         {/* Center — waveform + annotation list */}
         <div className="flex flex-1 flex-col overflow-hidden">
           <div className="border-b border-slate-200 bg-white px-6 py-4">
-            <p className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-400">
-              Click and drag on the waveform to create an annotation
-            </p>
-            <div ref={waveformRef} className="w-full rounded-xl bg-slate-50 p-2" />
-            <div className="mt-3 flex gap-3">
+            <div className="mb-3 flex items-center justify-between gap-4">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                  Audio visualisation
+                </p>
+                <p className="mt-1 text-sm text-slate-500">
+                  Click the waveform to seek. Region drag selection will be connected next.
+                </p>
+              </div>
+              <div className="whitespace-nowrap text-sm tabular-nums text-slate-500">
+                {formatTimestamp(currentTime)} / {formatTimestamp(duration)}
+              </div>
+            </div>
+
+            {waveformError && (
+              <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">
+                {waveformError}
+              </div>
+            )}
+
+            <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+              <div className="border-b border-slate-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-slate-400">
+                Waveform
+              </div>
+              <div ref={waveformRef} className="w-full px-2 py-3" />
+
+              <div className="border-y border-slate-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-slate-400">
+                Spectrogram
+              </div>
+              <div ref={spectrogramRef} className="w-full overflow-hidden bg-slate-950" />
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-3">
               <button
                 onClick={() => wavesurferRef.current?.playPause()}
-                className="rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition"
+                disabled={!audioReady}
+                className="rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
               >
                 {isPlaying ? "⏸ Pause" : "▶ Play"}
               </button>
               <button
-                onClick={() => wavesurferRef.current?.stop()}
-                className="rounded-lg border border-slate-200 px-5 py-2 text-sm text-slate-600 hover:bg-slate-50 transition"
+                onClick={handleStopPlayback}
+                disabled={!audioReady}
+                className="rounded-lg border border-slate-200 px-5 py-2 text-sm text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
               >
                 ■ Stop
               </button>
+              {!audioReady && !waveformError && (
+                <span className="text-xs text-slate-400">Loading waveform and spectrogram…</span>
+              )}
             </div>
           </div>
 
