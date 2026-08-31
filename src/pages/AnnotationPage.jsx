@@ -16,6 +16,10 @@ const DEFAULT_CLASSES = [
 ];
 const PALETTE = ["#a855f7", "#ec4899", "#14b8a6", "#eab308", "#ef4444", "#06b6d4"];
 
+// Fixed zoom steps make Zoom In / Zoom Out deterministic.
+// 1 = Fit the entire recording to the available width.
+const ZOOM_LEVELS = [1, 1.5, 2, 3, 4, 6, 8];
+
 const formatTimestamp = (seconds) => {
   const safeSeconds = Number.isFinite(Number(seconds)) ? Math.max(0, Number(seconds)) : 0;
   const totalMilliseconds = Math.round(safeSeconds * 1000);
@@ -178,7 +182,13 @@ export default function AnnotationPage() {
 
   // Shared waveform/spectrogram synchronisation state.
   const [activeSelection, setActiveSelection] = useState(null);
-  const [zoomPxPerSec, setZoomPxPerSec] = useState(0);
+
+  // Professional zoom model:
+  // 1x = fit the entire audio into the current waveform width.
+  // Higher values zoom relative to that fitted width, regardless of audio length
+  // or screen size.
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [appliedPxPerSec, setAppliedPxPerSec] = useState(0);
   const [visibleRange, setVisibleRange] = useState({ start: 0, end: 0 });
 
   const [loading, setLoading] = useState(true);
@@ -281,9 +291,9 @@ export default function AnnotationPage() {
     return () => unsubscribe();
   }, [uid, projectId]);
 
-  // Initialise the shared WaveSurfer instance used by both visualisations.
-  // The Spectrogram plugin is attached to the same instance, so its playback
-  // position stays synchronised with the waveform automatically.
+  // Initialise one shared WaveSurfer instance for both visualisations.
+  // The spectrogram uses the same audio/timeline. Region overlays, zoom and
+  // scrolling are also mirrored so the two panes behave as one linked view.
   useEffect(() => {
     if (!audioUrl || !waveformRef.current || !spectrogramRef.current || !uid) return;
 
@@ -291,6 +301,8 @@ export default function AnnotationPage() {
     setWaveformError("");
     setCurrentTime(0);
     setDuration(0);
+    setZoomLevel(1);
+    setAppliedPxPerSec(0);
 
     const regions = RegionsPlugin.create();
     const spectrogram = Spectrogram.create({
@@ -328,8 +340,25 @@ export default function AnnotationPage() {
       setAudioReady(true);
       setVisibleRange({ start: 0, end: loadedDuration });
 
+      // Calculate the fitted scale dynamically. This makes "1x" mean
+      // "show the entire recording", even for very short files or very wide screens.
+      // Use the stable outer viewport width. Do not use WaveSurfer's internal
+      // wrapper width as the zoom baseline because that width changes with zoom.
+      const viewportWidth =
+        waveformRef.current?.getBoundingClientRect().width ||
+        waveformRef.current?.clientWidth ||
+        1;
+      const fitPxPerSec = loadedDuration > 0 ? viewportWidth / loadedDuration : 0;
+
+      setZoomLevel(1);
+      setAppliedPxPerSec(fitPxPerSec);
+
+      if (fitPxPerSec > 0) {
+        ws.zoom(fitPxPerSec);
+      }
+
       // Same WaveSurfer v7 pattern used in the standalone prototype:
-      // drag across the waveform to create an annotation region.
+      // Drag across the waveform to create an annotation region.
       regions.enableDragSelection({
         color: "rgba(99, 102, 241, 0.25)",
       });
@@ -431,25 +460,89 @@ export default function AnnotationPage() {
     setIsPlaying(false);
   };
 
-  const handleZoomChange = (nextZoom) => {
+  const applyZoomLevel = (level) => {
     const ws = wavesurferRef.current;
-    if (!ws || !audioReady) return;
+    if (!ws || !audioReady || duration <= 0) return;
 
-    const zoom = Math.max(0, Math.min(300, Number(nextZoom) || 0));
-    setZoomPxPerSec(zoom);
-    ws.zoom(zoom);
+    const wrapper = ws.getWrapper?.();
+    if (!wrapper) return;
 
-    if (zoom === 0) {
-      setVisibleRange({ start: 0, end: ws.getDuration() });
-    }
-  };
+    // Calculate Fit from the OUTER React container, not WaveSurfer's internal wrapper.
+    // The internal wrapper/canvas changes width after zooming, which caused:
+    // Fit -> 1.5x -> Zoom Out to remain visually zoomed in.
 
-  const handleZoomOut = () => {
-    handleZoomChange(Math.max(0, zoomPxPerSec - 25));
+    // waveformRef.current is the stable viewport width available on the page.
+    const viewportWidth =
+      waveformRef.current?.getBoundingClientRect().width ||
+      waveformRef.current?.clientWidth ||
+      1;
+
+    const fitPxPerSec = viewportWidth / duration;
+    const nextPxPerSec = fitPxPerSec * level;
+
+    setAppliedPxPerSec(nextPxPerSec);
+    ws.zoom(nextPxPerSec);
+
+    // WaveSurfer redraws asynchronously.
+    // Correct the scroll position only after the new zoom width has been applied.
+    requestAnimationFrame(() => {
+      const updatedWrapper = ws.getWrapper?.();
+      if (!updatedWrapper) return;
+
+      if (level === 1) {
+        // Fit = whole recording, starting at time zero.
+        updatedWrapper.scrollLeft = 0;
+
+        if (spectrogramViewportRef.current) {
+          spectrogramViewportRef.current.scrollLeft = 0;
+        }
+
+        setVisibleRange({ start: 0, end: duration });
+        return;
+      }
+
+      // When zooming OUT from a larger view, the old scrollLeft may be outside the new smaller scrollable range.
+      // Clamp it so the viewport remains valid.
+      const maxScrollLeft = Math.max(
+        0,
+        updatedWrapper.scrollWidth - updatedWrapper.clientWidth
+      );
+
+      const nextScrollLeft = Math.min(
+        updatedWrapper.scrollLeft,
+        maxScrollLeft
+      );
+
+      updatedWrapper.scrollLeft = nextScrollLeft;
+
+      if (spectrogramViewportRef.current) {
+        spectrogramViewportRef.current.scrollLeft = nextScrollLeft;
+      }
+    });
   };
 
   const handleZoomIn = () => {
-    handleZoomChange(Math.min(300, zoomPxPerSec + 25));
+    const currentIndex = ZOOM_LEVELS.indexOf(zoomLevel);
+    const nextIndex =
+      currentIndex === -1
+        ? 1
+        : Math.min(currentIndex + 1, ZOOM_LEVELS.length - 1);
+
+    const nextLevel = ZOOM_LEVELS[nextIndex];
+    setZoomLevel(nextLevel);
+    applyZoomLevel(nextLevel);
+  };
+
+  const handleZoomOut = () => {
+    const currentIndex = ZOOM_LEVELS.indexOf(zoomLevel);
+    const nextIndex =
+      currentIndex <= 0
+        ? 0
+        : currentIndex - 1;
+
+    const nextLevel = ZOOM_LEVELS[nextIndex];
+    setZoomLevel(nextLevel);
+    applyZoomLevel(nextLevel);
   };
 
   const clampToDuration = (time) => {
@@ -507,7 +600,6 @@ export default function AnnotationPage() {
     ws.play(region.start, region.end);
   };
 
-  // Panel resizing (ADP-84) — drag the dividers between panels
   useEffect(() => {
     const handleMouseMove = (e) => {
       if (resizingRef.current === "left") {
@@ -1087,8 +1179,8 @@ export default function AnnotationPage() {
                   className="relative min-w-full"
                   style={{
                     width:
-                      zoomPxPerSec > 0 && duration > 0
-                        ? `${Math.max(1, duration * zoomPxPerSec)}px`
+                      appliedPxPerSec > 0 && duration > 0
+                        ? `${Math.max(1, duration * appliedPxPerSec)}px`
                         : "100%",
                   }}
                 >
@@ -1151,36 +1243,30 @@ export default function AnnotationPage() {
                 <button
                   type="button"
                   onClick={handleZoomOut}
-                  disabled={!audioReady || zoomPxPerSec <= 0}
+                  disabled={!audioReady || zoomLevel === ZOOM_LEVELS[0]}
                   className="rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
                   aria-label="Zoom out"
+                  title="Zoom out"
                 >
                   −
                 </button>
-                <input
-                  type="range"
-                  min="0"
-                  max="300"
-                  step="10"
-                  value={zoomPxPerSec}
-                  onChange={(e) => handleZoomChange(e.target.value)}
-                  disabled={!audioReady}
-                  className="w-32 accent-indigo-600"
-                  aria-label="Audio visualisation zoom"
-                />
+                <div
+                  className="min-w-[72px] rounded-md border border-slate-200 bg-slate-50 px-3 py-1 text-center text-xs font-medium tabular-nums text-slate-600"
+                  aria-label="Current audio visualisation zoom"
+                >
+                  {zoomLevel === 1 ? "Fit" : `${zoomLevel}×`}
+                </div>
                 <button
                   type="button"
                   onClick={handleZoomIn}
-                  disabled={!audioReady || zoomPxPerSec >= 300}
+                  disabled={!audioReady || zoomLevel === ZOOM_LEVELS[ZOOM_LEVELS.length - 1]}
                   className="rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
                   aria-label="Zoom in"
+                  title="Zoom in"
                 >
                   +
                 </button>
                 <ZoomIn className="h-4 w-4 text-slate-400" />
-                <span className="w-14 text-right text-xs tabular-nums text-slate-400">
-                  {zoomPxPerSec === 0 ? "Fit" : `${zoomPxPerSec}px/s`}
-                </span>
               </div>
             </div>
           </div>
