@@ -168,6 +168,7 @@ export default function AnnotationPage() {
   const [selectedAnnotation, setSelectedAnnotation] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editLabel, setEditLabel] = useState("");
+  const [editAnnotationClass, setEditAnnotationClass] = useState(null);
   const [editStart, setEditStart] = useState(0);
   const [editEnd, setEditEnd] = useState(0);
   const [editComment, setEditComment] = useState("");
@@ -185,8 +186,7 @@ export default function AnnotationPage() {
 
   // Professional zoom model:
   // 1x = fit the entire audio into the current waveform width.
-  // Higher values zoom relative to that fitted width, regardless of audio length
-  // or screen size.
+  // Higher values zoom relative to that fitted width, regardless of audio length or screen size.
   const [zoomLevel, setZoomLevel] = useState(1);
   const [appliedPxPerSec, setAppliedPxPerSec] = useState(0);
   const [visibleRange, setVisibleRange] = useState({ start: 0, end: 0 });
@@ -210,6 +210,7 @@ export default function AnnotationPage() {
   const [customLabels, setCustomLabels] = useState([]);
   const [selectedCustomLabelId, setSelectedCustomLabelId] = useState("");
   const [showCustomLabelModal, setShowCustomLabelModal] = useState(false);
+  const [customLabelModalMode, setCustomLabelModalMode] = useState("create");
   const [customLabelSearch, setCustomLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
   const [customLabelError, setCustomLabelError] = useState("");
@@ -292,8 +293,8 @@ export default function AnnotationPage() {
   }, [uid, projectId]);
 
   // Initialise one shared WaveSurfer instance for both visualisations.
-  // The spectrogram uses the same audio/timeline. Region overlays, zoom and
-  // scrolling are also mirrored so the two panes behave as one linked view.
+  // The spectrogram uses the same audio/timeline. 
+  // Region overlays, zoom and scrolling are also mirrored so the two panes behave as one linked view.
   useEffect(() => {
     if (!audioUrl || !waveformRef.current || !spectrogramRef.current || !uid) return;
 
@@ -399,8 +400,8 @@ export default function AnnotationPage() {
     };
 
     const unsubRegionCreated = regions.on("region-created", (region) => {
-      // New-annotation mode keeps one active selection. If the user drags a
-      // second region, discard the previous temporary selection.
+      // New-annotation mode keeps one active selection. 
+      // If the user drags a second region, discard the previous temporary selection.
       const previous = activeRegionRef.current;
       if (previous && previous !== region) {
         previous.remove();
@@ -648,7 +649,8 @@ export default function AnnotationPage() {
     )
     : [];
 
-  const openCustomLabelModal = () => {
+  const openCustomLabelModal = (mode = "create") => {
+    setCustomLabelModalMode(mode);
     setCustomLabelSearch("");
     setNewLabelName("");
     setCustomLabelError("");
@@ -668,7 +670,7 @@ export default function AnnotationPage() {
 
     if (className === "Custom Label") {
       setSelectedClassType("Custom Label");
-      openCustomLabelModal();
+      openCustomLabelModal("create");
       return;
     }
 
@@ -676,9 +678,23 @@ export default function AnnotationPage() {
   };
 
   const handleSelectCustomLabel = (label) => {
-    setSelectedClassType("Custom Label");
-    setSelectedCustomLabelId(label.id);
-    setCreateErrors((prev) => ({ ...prev, label: undefined }));
+    const annotationClass = {
+      id: label.id,
+      name: label.name,
+      color: label.color || "#3b82f6",
+      type: "custom",
+    };
+
+    if (customLabelModalMode === "edit") {
+      setEditLabel(label.name);
+      setEditAnnotationClass(annotationClass);
+      setEditErrors((prev) => ({ ...prev, label: undefined }));
+    } else {
+      setSelectedClassType("Custom Label");
+      setSelectedCustomLabelId(label.id);
+      setCreateErrors((prev) => ({ ...prev, label: undefined }));
+    }
+
     setShowCustomLabelModal(false);
     setCustomLabelSearch("");
     setNewLabelName("");
@@ -723,15 +739,28 @@ export default function AnnotationPage() {
       });
 
       // Select immediately; the real-time listener will populate the full list.
-      setSelectedClassType("Custom Label");
-      setSelectedCustomLabelId(docRef.id);
+      const createdLabel = { id: docRef.id, name: trimmed, color };
+
       setCustomLabels((prev) =>
         [
           ...prev.filter((label) => label.id !== docRef.id),
-          { id: docRef.id, name: trimmed, color },
+          createdLabel,
         ].sort((a, b) => a.name.localeCompare(b.name))
       );
-      setCreateErrors((prev) => ({ ...prev, label: undefined }));
+
+      if (customLabelModalMode === "edit") {
+        setEditLabel(trimmed);
+        setEditAnnotationClass({
+          ...createdLabel,
+          type: "custom",
+        });
+        setEditErrors((prev) => ({ ...prev, label: undefined }));
+      } else {
+        setSelectedClassType("Custom Label");
+        setSelectedCustomLabelId(docRef.id);
+        setCreateErrors((prev) => ({ ...prev, label: undefined }));
+      }
+
       setShowCustomLabelModal(false);
       setCustomLabelSearch("");
       setNewLabelName("");
@@ -800,12 +829,52 @@ export default function AnnotationPage() {
   const handleEditOpen = (annotation) => {
     setSelectedAnnotation(annotation);
     setEditLabel(annotation.label);
+    setEditAnnotationClass(
+      annotation.annotationClass || {
+        name: annotation.label,
+        color: "#94a3b8",
+        type: "default",
+      }
+    );
     setEditStart(annotation.startTime);
     setEditEnd(annotation.endTime);
     setEditComment(annotation.comment || "");
     setEditErrors({});
     setEditWarning("");
     setIsEditing(true);
+  };
+
+  const handleEditLabelChange = (value) => {
+    if (value === "__custom__") {
+      openCustomLabelModal("edit");
+      return;
+    }
+
+    const builtInClass = DEFAULT_CLASSES.find(
+      (annotationClass) => annotationClass.name === value
+    );
+
+    if (builtInClass && builtInClass.name !== "Custom Label") {
+      setEditLabel(builtInClass.name);
+      setEditAnnotationClass({
+        ...builtInClass,
+        type: "default",
+      });
+      setEditErrors((prev) => ({ ...prev, label: undefined }));
+      return;
+    }
+
+    const customLabel = customLabels.find((label) => label.id === value);
+    if (customLabel) {
+      setEditLabel(customLabel.name);
+      setEditAnnotationClass({
+        id: customLabel.id,
+        name: customLabel.name,
+        color: customLabel.color || "#3b82f6",
+        type: "custom",
+      });
+      setEditErrors((prev) => ({ ...prev, label: undefined }));
+    }
   };
 
   // Now persists to Firestore, then updates what's shown in the panel.
@@ -826,6 +895,12 @@ export default function AnnotationPage() {
     try {
       await updateDoc(doc(db, "users", uid, "projects", projectId, "annotations", selectedAnnotation.id), {
         label: editLabel.trim(),
+        annotationClass:
+          editAnnotationClass || {
+            name: editLabel.trim(),
+            color: "#94a3b8",
+            type: "default",
+          },
         startTime: start,
         endTime: end,
         comment: editComment.trim(),
@@ -1051,7 +1126,7 @@ export default function AnnotationPage() {
             type="button"
             onClick={() => {
               setSelectedClassType("Custom Label");
-              openCustomLabelModal();
+              openCustomLabelModal("create");
             }}
             className="mb-3 flex w-full items-center justify-between gap-2 rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-sm text-slate-500 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600"
           >
@@ -1086,7 +1161,7 @@ export default function AnnotationPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={openCustomLabelModal}
+                  onClick={() => openCustomLabelModal("create")}
                   className="flex-shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
                 >
                   Change
@@ -1400,16 +1475,59 @@ export default function AnnotationPage() {
                 {editErrors.end && <p className="text-xs text-red-500">{editErrors.end}</p>}
 
                 <div>
-                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Label *</label>
-                  <input
-                    type="text"
-                    value={editLabel}
-                    onChange={(e) => setEditLabel(e.target.value)}
-                    className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${editErrors.label ? "border-red-400" : "border-slate-200"
+                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">
+                    Label *
+                  </label>
+
+                  <select
+                    value={
+                      editAnnotationClass?.type === "custom"
+                        ? editAnnotationClass.id
+                        : editLabel
+                    }
+                    onChange={(e) => handleEditLabelChange(e.target.value)}
+                    className={`w-full rounded-lg border bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 ${editErrors.label ? "border-red-400" : "border-slate-200"
                       }`}
-                    placeholder="e.g. Koala bellow call"
-                  />
-                  {editErrors.label && <p className="mt-1 text-xs text-red-500">{editErrors.label}</p>}
+                  >
+                    <option value="Default Label">Default Label</option>
+
+                    {customLabels.map((label) => (
+                      <option key={label.id} value={label.id}>
+                        {label.name}
+                      </option>
+                    ))}
+
+                    <option value="Miscellaneous">Miscellaneous</option>
+                    <option value="__custom__">+ Create New Label…</option>
+                  </select>
+
+                  {editAnnotationClass && (
+                    <div className="mt-2 flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                      <span
+                        className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                        style={{
+                          backgroundColor: editAnnotationClass.color || "#94a3b8",
+                        }}
+                      />
+                      <span className="min-w-0 flex-1 truncate text-sm text-slate-600">
+                        {editLabel}
+                      </span>
+
+                      {editAnnotationClass.type === "custom" && (
+                        <button
+                          type="button"
+                          onClick={() => openCustomLabelModal("edit")}
+                          className="flex-shrink-0 text-xs font-medium text-indigo-600 hover:text-indigo-700"
+                        >
+                          Change
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {editErrors.label && (
+                    <p className="mt-1 text-xs text-red-500">{editErrors.label}</p>
+                  )}
                 </div>
 
                 <div>
@@ -1459,10 +1577,14 @@ export default function AnnotationPage() {
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
                 <h3 id="custom-label-modal-title" className="text-lg font-semibold text-slate-800">
-                  Select Custom Label
+                  {customLabelModalMode === "edit"
+                    ? "Change Annotation Label"
+                    : "Select Custom Label"}
                 </h3>
                 <p className="mt-1 text-sm text-slate-500">
-                  Search existing project labels or create a new one.
+                  {customLabelModalMode === "edit"
+                    ? "Select an existing custom label or create a new one for this annotation."
+                    : "Search existing project labels or create a new one."}
                 </p>
               </div>
               <button
@@ -1507,7 +1629,11 @@ export default function AnnotationPage() {
                         .includes(customLabelSearch.trim().toLowerCase())
                     )
                     .map((label) => {
-                      const isSelected = label.id === selectedCustomLabelId;
+                      const isSelected =
+                        customLabelModalMode === "edit"
+                          ? editAnnotationClass?.type === "custom" &&
+                          editAnnotationClass?.id === label.id
+                          : label.id === selectedCustomLabelId;
 
                       return (
                         <button
