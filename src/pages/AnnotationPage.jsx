@@ -16,7 +16,6 @@ const DEFAULT_CLASSES = [
 ];
 const PALETTE = ["#a855f7", "#ec4899", "#14b8a6", "#eab308", "#ef4444", "#06b6d4"];
 
-
 const formatTimestamp = (seconds) => {
   const safeSeconds = Number.isFinite(Number(seconds)) ? Math.max(0, Number(seconds)) : 0;
   const totalMilliseconds = Math.round(safeSeconds * 1000);
@@ -305,8 +304,9 @@ export default function AnnotationPage() {
       barRadius: 3,
       normalize: true,
       interact: true,
-      url: audioUrl,
-      // url: "/sample.wav",
+      url: audioUrl, // Valid Firebase Storage audio url
+      // url: "/sample.wav", --> Test with local audio (not CORS)
+      // url: "/this-file-does-not-exist.wav", --> Test with an invalid audio url
       plugins: [regions, spectrogram],
     });
 
@@ -834,8 +834,8 @@ export default function AnnotationPage() {
                   type="button"
                   onClick={() => handleSelectClassType(annotationClass.name)}
                   className={`flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm transition ${isSelected
-                      ? "bg-indigo-50 text-indigo-700"
-                      : "text-slate-700 hover:bg-slate-50"
+                    ? "bg-indigo-50 text-indigo-700"
+                    : "text-slate-700 hover:bg-slate-50"
                     }`}
                 >
                   <span className="flex min-w-0 items-center gap-2">
@@ -873,8 +873,8 @@ export default function AnnotationPage() {
                     setClassSearch("");
                   }}
                   className={`flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm transition ${isSelected
-                      ? "bg-indigo-50 text-indigo-700"
-                      : "text-slate-700 hover:bg-slate-50"
+                    ? "bg-indigo-50 text-indigo-700"
+                    : "text-slate-700 hover:bg-slate-50"
                     }`}
                 >
                   <span className="flex min-w-0 items-center gap-2">
@@ -1293,8 +1293,8 @@ export default function AnnotationPage() {
                             />
                             <span
                               className={`truncate ${isSelected
-                                  ? "font-medium text-indigo-700"
-                                  : "text-slate-700"
+                                ? "font-medium text-indigo-700"
+                                : "text-slate-700"
                                 }`}
                             >
                               {label.name}
