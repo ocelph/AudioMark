@@ -5,7 +5,7 @@ import { doc, getDoc, collection, addDoc, updateDoc, deleteDoc, serverTimestamp,
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
 import Spectrogram from "wavesurfer.js/dist/plugins/spectrogram.js";
-import { Download, History, Share2, Maximize2, Search, Plus, X, Pencil, Trash2 } from "lucide-react";
+import { Download, History, Share2, Maximize2, Search, Plus, X, Pencil, Trash2, ZoomIn, ZoomOut } from "lucide-react";
 
 // Built-in annotation class choices.
 // Project-level custom labels are created and selected through the Custom Label modal.
@@ -175,11 +175,18 @@ export default function AnnotationPage() {
   const [duration, setDuration] = useState(0);
   const [audioReady, setAudioReady] = useState(false);
   const [waveformError, setWaveformError] = useState("");
+
+  // Shared waveform/spectrogram synchronisation state.
+  const [activeSelection, setActiveSelection] = useState(null);
+  const [zoomPxPerSec, setZoomPxPerSec] = useState(0);
+  const [visibleRange, setVisibleRange] = useState({ start: 0, end: 0 });
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   const waveformRef = useRef(null);
   const spectrogramRef = useRef(null);
+  const spectrogramViewportRef = useRef(null);
   const wavesurferRef = useRef(null);
   const regionsRef = useRef(null);
   const activeRegionRef = useRef(null);
@@ -304,9 +311,10 @@ export default function AnnotationPage() {
       barRadius: 3,
       normalize: true,
       interact: true,
-      url: audioUrl, // Valid Firebase Storage audio url
-      // url: "/sample.wav", --> Test with local audio (not CORS)
-      // url: "/this-file-does-not-exist.wav", --> Test with an invalid audio url
+      minPxPerSec: 0,
+      url: audioUrl, // Valid Firebase Storage audio URL
+      // url: "/sample.wav", // Test with local sample audio
+      // url: "/this-file-does-not-exist.wav", // Test with an invalid audio URL
       plugins: [regions, spectrogram],
     });
 
@@ -318,6 +326,7 @@ export default function AnnotationPage() {
       setDuration(loadedDuration);
       setCurrentTime(0);
       setAudioReady(true);
+      setVisibleRange({ start: 0, end: loadedDuration });
 
       // Same WaveSurfer v7 pattern used in the standalone prototype:
       // drag across the waveform to create an annotation region.
@@ -330,12 +339,33 @@ export default function AnnotationPage() {
       setCurrentTime(time);
     });
 
+    // Keep track of the visible time window while zooming/scrolling.
+    const unsubScroll = ws.on("scroll", (visibleStartTime, visibleEndTime) => {
+      setVisibleRange({
+        start: Number.isFinite(visibleStartTime) ? visibleStartTime : 0,
+        end: Number.isFinite(visibleEndTime) ? visibleEndTime : ws.getDuration(),
+      });
+
+      // Mirror WaveSurfer's horizontal scroll position into the spectrogram
+      // viewport. The spectrogram content uses the same pixel-per-second width,
+      // so both views remain horizontally aligned while zoomed.
+      const waveWrapper = ws.getWrapper?.();
+      if (waveWrapper && spectrogramViewportRef.current) {
+        spectrogramViewportRef.current.scrollLeft = waveWrapper.scrollLeft;
+      }
+    });
+
     const syncCreateFormFromRegion = (region) => {
       if (!region || syncingRegionRef.current) return;
 
       activeRegionRef.current = region;
-      setCreateStart(Number(region.start.toFixed(3)));
-      setCreateEnd(Number(region.end.toFixed(3)));
+
+      const start = Number(region.start.toFixed(3));
+      const end = Number(region.end.toFixed(3));
+
+      setCreateStart(start);
+      setCreateEnd(end);
+      setActiveSelection({ start, end });
       setCreateErrors({});
     };
 
@@ -375,6 +405,7 @@ export default function AnnotationPage() {
     return () => {
       unsubReady?.();
       unsubTime?.();
+      unsubScroll?.();
       unsubRegionCreated?.();
       unsubRegionClicked?.();
       unsubRegionUpdated?.();
@@ -383,6 +414,7 @@ export default function AnnotationPage() {
       unsubFinish?.();
       unsubError?.();
       activeRegionRef.current = null;
+      setActiveSelection(null);
       regionsRef.current = null;
       wavesurferRef.current = null;
       ws.destroy();
@@ -397,6 +429,27 @@ export default function AnnotationPage() {
     ws.setTime(0);
     setCurrentTime(0);
     setIsPlaying(false);
+  };
+
+  const handleZoomChange = (nextZoom) => {
+    const ws = wavesurferRef.current;
+    if (!ws || !audioReady) return;
+
+    const zoom = Math.max(0, Math.min(300, Number(nextZoom) || 0));
+    setZoomPxPerSec(zoom);
+    ws.zoom(zoom);
+
+    if (zoom === 0) {
+      setVisibleRange({ start: 0, end: ws.getDuration() });
+    }
+  };
+
+  const handleZoomOut = () => {
+    handleZoomChange(Math.max(0, zoomPxPerSec - 25));
+  };
+
+  const handleZoomIn = () => {
+    handleZoomChange(Math.min(300, zoomPxPerSec + 25));
   };
 
   const clampToDuration = (time) => {
@@ -419,6 +472,11 @@ export default function AnnotationPage() {
     syncingRegionRef.current = true;
     region.setOptions({ start, end });
     syncingRegionRef.current = false;
+
+    setActiveSelection({
+      start: Number(start.toFixed(3)),
+      end: Number(end.toFixed(3)),
+    });
   };
 
   const handleCreateStartChange = (nextStart) => {
@@ -641,6 +699,7 @@ export default function AnnotationPage() {
       // Clear it after the annotation has been saved successfully.
       activeRegionRef.current?.remove();
       activeRegionRef.current = null;
+      setActiveSelection(null);
     } catch (err) {
       console.error("Failed to create annotation:", err);
     }
@@ -1001,42 +1060,128 @@ export default function AnnotationPage() {
             )}
 
             <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
-              <div className="border-b border-slate-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-slate-400">
-                Waveform
+              <div className="flex items-center justify-between border-b border-slate-200 bg-white px-3 py-2">
+                <span className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                  Waveform
+                </span>
+                <span className="text-[11px] tabular-nums text-slate-400">
+                  {visibleRange.end > visibleRange.start
+                    ? `${formatTimestamp(visibleRange.start)} – ${formatTimestamp(visibleRange.end)}`
+                    : "Full timeline"}
+                </span>
               </div>
-              <div ref={waveformRef} className="w-full px-2 py-3" />
+
+              <div className="relative">
+                <div ref={waveformRef} className="w-full px-2 py-3" />
+              </div>
 
               <div className="border-y border-slate-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-slate-400">
                 Spectrogram
               </div>
-              <div ref={spectrogramRef} className="w-full overflow-hidden bg-slate-950" />
+
+              <div
+                ref={spectrogramViewportRef}
+                className="w-full overflow-hidden bg-slate-950"
+              >
+                <div
+                  className="relative min-w-full"
+                  style={{
+                    width:
+                      zoomPxPerSec > 0 && duration > 0
+                        ? `${Math.max(1, duration * zoomPxPerSec)}px`
+                        : "100%",
+                  }}
+                >
+                  <div ref={spectrogramRef} className="w-full" />
+
+                  {duration > 0 && activeSelection && (
+                    <div
+                      className="pointer-events-none absolute inset-y-0 z-10 border-x-2 border-indigo-300 bg-indigo-400/20"
+                      style={{
+                        left: `${(activeSelection.start / duration) * 100}%`,
+                        width: `${((activeSelection.end - activeSelection.start) / duration) * 100}%`,
+                      }}
+                      aria-hidden="true"
+                    />
+                  )}
+
+                  {duration > 0 && (
+                    <div
+                      className="pointer-events-none absolute inset-y-0 z-20 w-0.5 bg-white/90"
+                      style={{
+                        left: `${Math.min(100, Math.max(0, (currentTime / duration) * 100))}%`,
+                      }}
+                      aria-hidden="true"
+                    />
+                  )}
+                </div>
+              </div>
             </div>
 
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <button
-                onClick={() => wavesurferRef.current?.playPause()}
-                disabled={!audioReady}
-                className="rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
-              >
-                {isPlaying ? "⏸ Pause" : "▶ Play"}
-              </button>
-              <button
-                onClick={handleStopPlayback}
-                disabled={!audioReady}
-                className="rounded-lg border border-slate-200 px-5 py-2 text-sm text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
-              >
-                ■ Stop
-              </button>
-              <button
-                onClick={handlePlaySelection}
-                disabled={!audioReady}
-                className="rounded-lg border border-slate-200 px-5 py-2 text-sm text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
-              >
-                ▶ Play Selection
-              </button>
-              {!audioReady && !waveformError && (
-                <span className="text-xs text-slate-400">Loading waveform and spectrogram…</span>
-              )}
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  onClick={() => wavesurferRef.current?.playPause()}
+                  disabled={!audioReady}
+                  className="rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
+                >
+                  {isPlaying ? "⏸ Pause" : "▶ Play"}
+                </button>
+                <button
+                  onClick={handleStopPlayback}
+                  disabled={!audioReady}
+                  className="rounded-lg border border-slate-200 px-5 py-2 text-sm text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+                >
+                  ■ Stop
+                </button>
+                <button
+                  onClick={handlePlaySelection}
+                  disabled={!audioReady}
+                  className="rounded-lg border border-slate-200 px-5 py-2 text-sm text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+                >
+                  ▶ Play Selection
+                </button>
+                {!audioReady && !waveformError && (
+                  <span className="text-xs text-slate-400">Loading waveform and spectrogram…</span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <ZoomOut className="h-4 w-4 text-slate-400" />
+                <button
+                  type="button"
+                  onClick={handleZoomOut}
+                  disabled={!audioReady || zoomPxPerSec <= 0}
+                  className="rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+                  aria-label="Zoom out"
+                >
+                  −
+                </button>
+                <input
+                  type="range"
+                  min="0"
+                  max="300"
+                  step="10"
+                  value={zoomPxPerSec}
+                  onChange={(e) => handleZoomChange(e.target.value)}
+                  disabled={!audioReady}
+                  className="w-32 accent-indigo-600"
+                  aria-label="Audio visualisation zoom"
+                />
+                <button
+                  type="button"
+                  onClick={handleZoomIn}
+                  disabled={!audioReady || zoomPxPerSec >= 300}
+                  className="rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+                  aria-label="Zoom in"
+                >
+                  +
+                </button>
+                <ZoomIn className="h-4 w-4 text-slate-400" />
+                <span className="w-14 text-right text-xs tabular-nums text-slate-400">
+                  {zoomPxPerSec === 0 ? "Fit" : `${zoomPxPerSec}px/s`}
+                </span>
+              </div>
             </div>
           </div>
 
