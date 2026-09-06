@@ -6,6 +6,7 @@ import Logo from '../components/Logo';
 import { createUserWithEmailAndPassword } from "firebase/auth";
 import { doc, setDoc } from "firebase/firestore";
 import { auth, db } from "../services/firebase";
+import { getFunctions, httpsCallable } from "firebase/functions";
 
 export default function RegisterPage() {
   // useState — "hook" that lets a function component hold data that can change over time and trigger a re-render when it does.
@@ -20,7 +21,7 @@ export default function RegisterPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [errors, setErrors] = useState({}); // holds validation error messages, keyed by field name (example: errors.password)
-  const [registered, setRegistered] = useState(false); // keep track of successful registration  
+  const [registerRequest, sentRequest] = useState(false); // keep track of successful registration  
   const [submitting, setSubmitting] = useState(false);
 
   
@@ -76,25 +77,35 @@ export default function RegisterPage() {
     setErrors({});
 
     try {
-      // Creates the Auth account. Throws auth/email-already-in-use automatically if that email is already registered.
-      const userCredential = await createUserWithEmailAndPassword(
-        auth,
-        form.email,
-        form.password
-      );
+      const functions = getFunctions();
+      const registerUser = httpsCallable(functions, "registerUser");
 
-      const uid = userCredential.user.uid;
-
-      // Use the Auth UID as the Firestore document ID, so each user's document has same unique ID.
-      await setDoc(doc(db, "users", uid), {
+      const result = await registerUser({
         firstName: form.firstName,
         lastName: form.lastName,
         email: form.email,
-        createdAt: new Date().toISOString(),
-      });
+        password: form.password,
+      })
+      // // Creates the Auth account. Throws auth/email-already-in-use automatically if that email is already registered.
+      // const userCredential = await createUserWithEmailAndPassword(
+      //   auth,
+      //   form.email,
+      //   form.password
+      // );
 
-      setRegistered(true);
-      console.log("Registered new user:", uid);
+      const uid = result.data.uid;
+
+      // // Use the Auth UID as the Firestore document ID, so each user's document has same unique ID.
+      // await setDoc(doc(db, "users", uid), {
+      //   firstName: form.firstName,
+      //   lastName: form.lastName,
+      //   email: form.email,
+      //   createdAt: new Date().toISOString(),
+      // });
+
+      sentRequest(true);
+      console.log("Request sent for new user:", uid);
+      sentRequest(true);
 
     } catch (err) {
       if (err.code === "auth/email-already-in-use") {
@@ -103,6 +114,8 @@ export default function RegisterPage() {
         setErrors({ email: "Enter a valid email address." });
       } else if (err.code === "auth/weak-password") {
         setErrors({ password: "Password is too weak." });
+      } else if (err.code === "auth/too-many-requests") {
+        setErrors({ general: "Unusual sign-up activity detected. Please try again later" })
       } else {
         setErrors({ general: "Something went wrong. Please try again." });
       }
@@ -247,14 +260,14 @@ export default function RegisterPage() {
           )}
           <button
             type="submit"
-            disabled={submitting || registered}
+            disabled={submitting || registerRequest}
             className="w-full bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-semibold py-3 rounded-xl mt-2 hover:opacity-90 transition disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {/* if registered true: changes to Account registered and grey out button*/}
             {/* else if submitting true: changes to Creating account and grey out button*/}
             {/* else default Create account button*/}
-            {registered ? "Account registered" 
-                        : submitting ? "Creating account..."  
+            {registerRequest ? "Request sent" 
+                        : submitting ? "Sending request..."  
                                      : "Create account"} 
           </button>
         </form>
