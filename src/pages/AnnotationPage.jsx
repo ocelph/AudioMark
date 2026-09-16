@@ -429,7 +429,7 @@ export default function AnnotationPage() {
     const unsubError = ws.on("error", (err) => {
       console.error("WaveSurfer failed to load audio:", err);
       setAudioReady(false);
-      setWaveformError("Unable to load the audio visualisation.");
+      setWaveformError("Unable to load this audio file. The file may be corrupted or use an unsupported audio format or codec.");
     });
 
     return () => {
