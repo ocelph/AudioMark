@@ -77,8 +77,8 @@ export default function RegisterPage() {
     setErrors({});
 
     try {
-      console.log("1. Starting registration");
-      const registrationStart = performance.now();
+      // console.log("1. Starting registration");
+      // const registrationStart = performance.now();
 
       const functions = getFunctions();
       const registerUser = httpsCallable(functions, "registerUser");
@@ -92,14 +92,14 @@ export default function RegisterPage() {
 
       const uid = result.data.uid;
 
-      console.log("2. Firestore user document created");
-      console.log( "Registration request took:",
-        ((performance.now() - registrationStart) / 1000).toFixed(2),
-        "seconds"
-      );
+      // console.log("2. Firestore user document created");
+      // console.log( "Registration request took:",
+      //   ((performance.now() - registrationStart) / 1000).toFixed(2),
+      //   "seconds"
+      // );
 
       sentRequest(true);
-      console.log("Request sent for new user:", uid);
+      // console.log("Request sent for new user:", uid);
       sentRequest(true);
 
     } catch (err) {

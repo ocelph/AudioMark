@@ -79,7 +79,7 @@ export default function LoginPage() {
 
         const status = userSnap.data().status;
 
-        console.log("Account status:", status);
+        // console.log("Account status:", status);
 
         if (status === "approved") {
           navigate("/dashboard", { replace: true });
