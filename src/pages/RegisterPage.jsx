@@ -89,27 +89,12 @@ export default function RegisterPage() {
         email: form.email,
         password: form.password,
       })
-      // // Creates the Auth account. Throws auth/email-already-in-use automatically if that email is already registered.
-      // const userCredential = await createUserWithEmailAndPassword(
-      //   auth,
-      //   form.email,
-      //   form.password
-      // );
 
       const uid = result.data.uid;
 
-      // // Use the Auth UID as the Firestore document ID, so each user's document has same unique ID.
-      // await setDoc(doc(db, "users", uid), {
-      //   firstName: form.firstName,
-      //   lastName: form.lastName,
-      //   email: form.email,
-      //   createdAt: new Date().toISOString(),
-      // });
-
       console.log("2. Firestore user document created");
-      console.log(
-        "Firestore write took:",
-        ((performance.now() - firestoreStart) / 1000).toFixed(2),
+      console.log( "Registration request took:",
+        ((performance.now() - registrationStart) / 1000).toFixed(2),
         "seconds"
       );
 
