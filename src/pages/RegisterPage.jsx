@@ -4,7 +4,7 @@ import backgroundImage from "../assets/login_page_background.png";
 import { Link } from "react-router-dom";
 import Logo from '../components/Logo';
 import { createUserWithEmailAndPassword } from "firebase/auth";
-import { doc, setDoc } from "firebase/firestore";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "../services/firebase";
 
 export default function RegisterPage() {
@@ -76,37 +76,66 @@ export default function RegisterPage() {
     setErrors({});
 
     try {
+      console.log("1. Starting registration");
+      const registrationStart = performance.now();
+
       // Creates the Auth account. Throws auth/email-already-in-use automatically if that email is already registered.
       const userCredential = await createUserWithEmailAndPassword(
         auth,
-        form.email,
+        form.email.trim().toLowerCase(),
         form.password
       );
 
+      console.log("2. Firebase Auth account created");
+      console.log(
+        "Auth creation took:",
+        ((performance.now() - registrationStart) / 1000).toFixed(2),
+        "seconds"
+      );
+
       const uid = userCredential.user.uid;
+      
+      console.log("3. Starting Firestore user document write");
+      const firestoreStart = performance.now();
 
       // Use the Auth UID as the Firestore document ID, so each user's document has same unique ID.
       await setDoc(doc(db, "users", uid), {
-        firstName: form.firstName,
-        lastName: form.lastName,
+        firstName: form.firstName.trim(),
+        lastName: form.lastName.trim(),
         email: form.email,
-        createdAt: new Date().toISOString(),
+        createdAt: serverTimestamp(),
       });
+
+      console.log("4. Firestore user document created");
+      console.log(
+        "Firestore write took:",
+        ((performance.now() - firestoreStart) / 1000).toFixed(2),
+        "seconds"
+      );
+
+      console.log(
+        "Total registration took:",
+        ((performance.now() - registrationStart) / 1000).toFixed(2),
+        "seconds"
+      );
 
       setRegistered(true);
       console.log("Registered new user:", uid);
 
     } catch (err) {
+          console.error("Registration error:", err);
+
       if (err.code === "auth/email-already-in-use") {
-        setErrors({ email: "Email already in use" });
+        setErrors({ email: "Email already in use." });
       } else if (err.code === "auth/invalid-email") {
         setErrors({ email: "Enter a valid email address." });
       } else if (err.code === "auth/weak-password") {
         setErrors({ password: "Password is too weak." });
       } else {
-        setErrors({ general: "Something went wrong. Please try again." });
+        setErrors({ general: "Something went wrong. Please try again."});
       }
-      setSubmitting(false); // button revert back to "Create account" so the user can retry
+    } finally {
+      setSubmitting(false);
     }
   };
 

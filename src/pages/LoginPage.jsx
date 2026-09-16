@@ -4,7 +4,7 @@ import backgroundImage from "../assets/login_page_background.png";
 import { Link, useNavigate } from "react-router-dom";
 import Logo from '../components/Logo';
 import { auth } from "../services/firebase";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import {signInWithEmailAndPassword} from "firebase/auth";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -29,14 +29,17 @@ export default function LoginPage() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
     const newErrors = {};
-    if (!form.email) {
+
+    if (!form.email.trim()) {
       newErrors.email = "Email is required.";
     }
+
     if (!form.password) {
       newErrors.password = "Password is required.";
     }
-    
+
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
       return;
@@ -46,9 +49,32 @@ export default function LoginPage() {
     setErrors({});
 
     try {
-      await signInWithEmailAndPassword(auth, form.email, form.password);
+      console.log("1. Starting login");
+      const start = performance.now();
+
+      const userCredential = await signInWithEmailAndPassword(
+        auth,
+        form.email.trim().toLowerCase(),
+        form.password
+      );
+
+      console.log("2. Firebase login finished");
+      console.log(
+        "Login took:",
+        ((performance.now() - start) / 1000).toFixed(2),
+        "seconds"
+      );
+      console.log("Logged in user:", userCredential.user.uid);
+
+      console.log("3. Navigating to dashboard");
+
       navigate("/dashboard");
+
     } catch (err) {
+      console.error("LOGIN ERROR:", err);
+      console.error("Code:", err.code);
+      console.error("Message:", err.message);
+
       const networkOrServerIssue = [
         "auth/network-request-failed",
         "auth/internal-error",
@@ -57,9 +83,13 @@ export default function LoginPage() {
       ].includes(err.code);
 
       if (networkOrServerIssue) {
-        setErrors({ general: "Something went wrong. Please try again later." });
+        setErrors({
+          general: "Something went wrong. Please try again later."
+        });
       } else {
-        setErrors({ password: "Invalid credentials" });
+        setErrors({
+          password: "Invalid credentials"
+        });
       }
     } finally {
       setSubmitting(false);
