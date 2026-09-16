@@ -3,8 +3,9 @@ import { AudioWaveform, Mail, Lock, Eye, EyeOff } from "lucide-react";
 import backgroundImage from "../assets/login_page_background.png";
 import { Link, useNavigate } from "react-router-dom";
 import Logo from '../components/Logo';
-import { auth } from "../services/firebase";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import { signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
+import { auth, db } from "../services/firebase";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -29,14 +30,17 @@ export default function LoginPage() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
     const newErrors = {};
-    if (!form.email) {
+
+    if (!form.email.trim()) {
       newErrors.email = "Email is required.";
     }
+
     if (!form.password) {
       newErrors.password = "Password is required.";
     }
-    
+
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
       return;
@@ -45,10 +49,94 @@ export default function LoginPage() {
     setSubmitting(true);
     setErrors({});
 
+    const email = form.email.trim().toLowerCase();
+
     try {
-      await signInWithEmailAndPassword(auth, form.email, form.password);
-      navigate("/dashboard");
+      // Step 1: Try to authenticate
+      const userCredential = await signInWithEmailAndPassword(
+        auth,
+        email,
+        form.password
+      );
+
+      const user = userCredential.user;
+
+      // Step 2: Authentication worked.
+      // Now verify the account status in Firestore.
+      try {
+        const userRef = doc(db, "users", user.uid);
+        const userSnap = await getDoc(userRef);
+
+        if (!userSnap.exists()) {
+          await signOut(auth);
+
+          setErrors({
+            general: "Unable to verify your account status."
+          });
+
+          return;
+        }
+
+        const status = userSnap.data().status;
+
+        // console.log("Account status:", status);
+
+        if (status === "approved") {
+          navigate("/dashboard", { replace: true });
+          return;
+        }
+
+        // Safety fallback:
+        // pending/denied accounts should normally already be
+        // disabled in Firebase Authentication.
+        await signOut(auth);
+
+        if (status === "pending") {
+          setErrors({
+            general:
+              "Your account is currently pending administrator approval."
+          });
+        } else if (status === "denied") {
+          setErrors({
+            general:
+              "Your registration request was not approved. Please contact an administrator if you believe this was a mistake."
+          });
+        } else {
+          setErrors({
+            general: "Unable to verify your account status."
+          });
+        }
+
+      } catch (firestoreError) {
+        console.error(
+          "Error checking account status:",
+          firestoreError
+        );
+
+        await signOut(auth);
+
+        setErrors({
+          general:
+            "Unable to verify your account status. Please try again later."
+        });
+      }
+
     } catch (err) {
+      console.error("LOGIN ERROR:", err);
+      console.error("Code:", err.code);
+      console.error("Message:", err.message);
+
+      // Pending and denied users are disabled in Firebase Auth,
+      // so login stops here before Firestore can be checked.
+      if (err.code === "auth/user-disabled") {
+        setErrors({
+          general:
+            "Your account is currently inactive. If you recently registered, it may still be pending administrator approval."
+        });
+
+        return;
+      }
+
       const networkOrServerIssue = [
         "auth/network-request-failed",
         "auth/internal-error",
@@ -57,9 +145,14 @@ export default function LoginPage() {
       ].includes(err.code);
 
       if (networkOrServerIssue) {
-        setErrors({ general: "Something went wrong. Please try again later." });
+        setErrors({
+          general:
+            "Something went wrong. Please try again later."
+        });
       } else {
-        setErrors({ password: "Invalid credentials" });
+        setErrors({
+          password: "Invalid credentials"
+        });
       }
     } finally {
       setSubmitting(false);
@@ -134,9 +227,9 @@ export default function LoginPage() {
           </button>
 
           <div className="flex items-center justify-between">
-            <a href="#" className="text-sm font-medium text-indigo-600 hover:text-indigo-700">
+            <Link to="/ForgotPassword" className="text-sm font-medium text-indigo-600 hover:text-indigo-700">
               Forgot password?
-            </a>
+            </Link>
           </div>
 
         </form>
