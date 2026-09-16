@@ -134,9 +134,9 @@ export default function LoginPage() {
           </button>
 
           <div className="flex items-center justify-between">
-            <a href="#" className="text-sm font-medium text-indigo-600 hover:text-indigo-700">
+            <Link to="/ForgotPassword" className="text-sm font-medium text-indigo-600 hover:text-indigo-700">
               Forgot password?
-            </a>
+            </Link>
           </div>
 
         </form>
