@@ -3,8 +3,9 @@ import { AudioWaveform, Mail, Lock, Eye, EyeOff } from "lucide-react";
 import backgroundImage from "../assets/login_page_background.png";
 import { Link, useNavigate } from "react-router-dom";
 import Logo from '../components/Logo';
-import { auth } from "../services/firebase";
-import {signInWithEmailAndPassword} from "firebase/auth";
+import { signInWithEmailAndPassword, signOut } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
+import { auth, db } from "../services/firebase";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -48,32 +49,93 @@ export default function LoginPage() {
     setSubmitting(true);
     setErrors({});
 
-    try {
-      console.log("1. Starting login");
-      const start = performance.now();
+    const email = form.email.trim().toLowerCase();
 
+    try {
+      // Step 1: Try to authenticate
       const userCredential = await signInWithEmailAndPassword(
         auth,
-        form.email.trim().toLowerCase(),
+        email,
         form.password
       );
 
-      console.log("2. Firebase login finished");
-      console.log(
-        "Login took:",
-        ((performance.now() - start) / 1000).toFixed(2),
-        "seconds"
-      );
-      console.log("Logged in user:", userCredential.user.uid);
+      const user = userCredential.user;
 
-      console.log("3. Navigating to dashboard");
+      // Step 2: Authentication worked.
+      // Now verify the account status in Firestore.
+      try {
+        const userRef = doc(db, "users", user.uid);
+        const userSnap = await getDoc(userRef);
 
-      navigate("/dashboard");
+        if (!userSnap.exists()) {
+          await signOut(auth);
+
+          setErrors({
+            general: "Unable to verify your account status."
+          });
+
+          return;
+        }
+
+        const status = userSnap.data().status;
+
+        console.log("Account status:", status);
+
+        if (status === "approved") {
+          navigate("/dashboard", { replace: true });
+          return;
+        }
+
+        // Safety fallback:
+        // pending/denied accounts should normally already be
+        // disabled in Firebase Authentication.
+        await signOut(auth);
+
+        if (status === "pending") {
+          setErrors({
+            general:
+              "Your account is currently pending administrator approval."
+          });
+        } else if (status === "denied") {
+          setErrors({
+            general:
+              "Your registration request was not approved. Please contact an administrator if you believe this was a mistake."
+          });
+        } else {
+          setErrors({
+            general: "Unable to verify your account status."
+          });
+        }
+
+      } catch (firestoreError) {
+        console.error(
+          "Error checking account status:",
+          firestoreError
+        );
+
+        await signOut(auth);
+
+        setErrors({
+          general:
+            "Unable to verify your account status. Please try again later."
+        });
+      }
 
     } catch (err) {
       console.error("LOGIN ERROR:", err);
       console.error("Code:", err.code);
       console.error("Message:", err.message);
+
+      // Pending and denied users are disabled in Firebase Auth,
+      // so login stops here before Firestore can be checked.
+      if (err.code === "auth/user-disabled") {
+        setErrors({
+          general:
+            "Your account is currently inactive. If you recently registered, it may still be pending administrator approval."
+        });
+
+        return;
+      }
 
       const networkOrServerIssue = [
         "auth/network-request-failed",
@@ -84,7 +146,8 @@ export default function LoginPage() {
 
       if (networkOrServerIssue) {
         setErrors({
-          general: "Something went wrong. Please try again later."
+          general:
+            "Something went wrong. Please try again later."
         });
       } else {
         setErrors({
