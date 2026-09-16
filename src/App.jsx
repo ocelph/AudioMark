@@ -4,6 +4,8 @@ import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import ProjectPage from './pages/ProjectPage'
 import AnnotationPage from './pages/AnnotationPage'
+import ForgotPassword from './pages/ForgotPassword'
+import ForgotPassword2 from './pages/ForgotPassword2'
 
 function App() {
   return (
@@ -15,6 +17,8 @@ function App() {
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/project/:projectId" element={<ProjectPage />} />
         <Route path="/project/:projectId/annotation" element={<AnnotationPage />} />
+        <Route path="/forgotpassword" element={<ForgotPassword />} />
+        <Route path="/forgotpassword2" element={<ForgotPassword2 />} />
       </Routes>
     </BrowserRouter>
   )
