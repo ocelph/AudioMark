@@ -3,16 +3,18 @@ import RegisterPage from './pages/RegisterPage'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
 import ProjectPage from './pages/ProjectPage'
+import AnnotationPage from './pages/AnnotationPage'
 
 function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<Navigate to="/login" replace />} /> {/* when someone lands on the bare root URL (/), they are redirected to /login */}
+        <Route path="/" element={<Navigate to="/login" replace />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/project/:projectId" element={<ProjectPage />} />
+        <Route path="/project/:projectId/annotation" element={<AnnotationPage />} />
       </Routes>
     </BrowserRouter>
   )
