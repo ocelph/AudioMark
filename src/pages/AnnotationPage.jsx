@@ -2019,7 +2019,8 @@ export default function AnnotationPage() {
                           >
                             <td className="px-3 py-2">
                               <input type="radio" name="export-annotation" checked={exportSelectedAnnotationId === ann.id}
-                                onChange={() => setExportSelectedAnnotationId(ann.id)}
+                                onClick={() => setExportSelectedAnnotationId((prev) => prev === ann.id ? null : ann.id)}
+                                onChange={() => {}}
                                 aria-label={`Select ${ann.label || "annotation"} for export`}
                                 className="h-4 w-4 cursor-pointer accent-indigo-600"
                               />
