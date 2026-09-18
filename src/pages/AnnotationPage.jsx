@@ -345,21 +345,18 @@ const extractSegmentAsWav = (
     );
   }
 
-  const safeStart = Math.min(
-    Math.max(0, start),
-    decodedAudio.duration
-  );
+  const timeTolerance = 0.01;
 
-  const safeEnd = Math.min(
-    Math.max(0, end),
-    decodedAudio.duration
-  );
+if (start >= decodedAudio.duration) {
+  throw new Error("The annotation starts outside the source audio.");
+}
 
-  if (safeEnd <= safeStart) {
-    throw new Error(
-      "The annotation does not contain a valid audio segment."
-    );
-  }
+if (end > decodedAudio.duration + timeTolerance) {
+  throw new Error("The annotation extends beyond the source audio duration.");
+}
+
+const safeStart = start;
+const safeEnd = Math.min(end, decodedAudio.duration);
 
   const sampleRate = decodedAudio.sampleRate;
 
@@ -845,6 +842,7 @@ export default function AnnotationPage() {
   const [showAnnotationFormatOptions, setShowAnnotationFormatOptions] = useState(false);
   const [showCombinedFormatOptions, setShowCombinedFormatOptions] = useState(false);
   const [showAllAnnotationsFormatOptions, setShowAllAnnotationsFormatOptions] = useState(false);
+  const [showAllCombinedFormatOptions, setShowAllCombinedFormatOptions] = useState(false);
   const [exportSelectedAnnotationId, setExportSelectedAnnotationId] = useState(null);
   const [isExporting, setIsExporting] = useState(false);
   const [exportFeedback, setExportFeedback] = useState(null);
@@ -1597,6 +1595,7 @@ export default function AnnotationPage() {
         setShowAnnotationFormatOptions(false);
         setShowCombinedFormatOptions(false);
         setShowAllAnnotationsFormatOptions(false);
+        setShowAllCombinedFormatOptions(false);
       }
     };
 
@@ -1606,6 +1605,7 @@ export default function AnnotationPage() {
         setShowAnnotationFormatOptions(false);
         setShowCombinedFormatOptions(false);
         setShowAllAnnotationsFormatOptions(false);
+        setShowAllCombinedFormatOptions(false);
       }
     };
 
@@ -1659,6 +1659,7 @@ export default function AnnotationPage() {
   setShowAnnotationFormatOptions(false);
   setShowCombinedFormatOptions(false);
   setShowAllAnnotationsFormatOptions(false);
+  setShowAllCombinedFormatOptions(false);
   setIsExporting(true);
 
   setExportFeedback({type: "loading", message: "Generating audio segment...", });
@@ -1725,6 +1726,7 @@ export default function AnnotationPage() {
     setShowAnnotationFormatOptions(false);
     setShowCombinedFormatOptions(false);
     setShowAllAnnotationsFormatOptions(false);
+    setShowAllCombinedFormatOptions(false);
     setIsExporting(true);
 
     setExportFeedback({ type: "loading", message: `Generating ${format.toUpperCase()} annotation export...` });
@@ -1801,6 +1803,7 @@ export default function AnnotationPage() {
     setShowAnnotationFormatOptions(false);
     setShowCombinedFormatOptions(false);
     setShowAllAnnotationsFormatOptions(false);
+    setShowAllCombinedFormatOptions(false);
     setIsExporting(true);
 
     setExportFeedback({ type: "loading", message: "Generating audio and annotation ZIP..." });
@@ -1894,6 +1897,7 @@ export default function AnnotationPage() {
   setShowAnnotationFormatOptions(false);
   setShowCombinedFormatOptions(false);
   setShowAllAnnotationsFormatOptions(false);
+  setShowAllCombinedFormatOptions(false);
   setIsExporting(true);
   setExportFeedback({ type: "loading", message: `Generating ${format.toUpperCase()} export for all annotations...` });
 
@@ -1947,6 +1951,126 @@ export default function AnnotationPage() {
 };
 
 
+// actual Download All Annotations & Audio segments handler
+const handleDownloadAllAnnotationsAndAudio = async (format) => {
+  if (annotations.length === 0) {
+    setExportFeedback({ type: "error", message: "There are no annotations to export." });
+    return;
+  }
+
+  if (!audioUrl) {
+    setExportFeedback({ type: "error", message: "The project's audio file is unavailable." });
+    return;
+  }
+
+  if (format !== "json" && format !== "csv") {
+    setExportFeedback({ type: "error", message: "Unsupported annotation export format." });
+    return;
+  }
+
+  setShowDownloadMenu(false);
+  setShowAnnotationFormatOptions(false);
+  setShowCombinedFormatOptions(false);
+  setShowAllAnnotationsFormatOptions(false);
+  setShowAllCombinedFormatOptions(false);
+  setIsExporting(true);
+  setExportFeedback({ type: "loading", message: "Preparing all annotation and audio segments..." });
+
+  try {
+    // 1. Download and decode the source recording ONCE.
+    const decodedAudio = await loadAndDecodeAudio(audioUrl);
+
+    // 2. Create the ZIP.
+    const zip = new JSZip();
+    const expectedFileNames = [];
+
+    // 3. Generate one WAV + annotation file for every annotation.
+    for (let index = 0; index < annotations.length; index++) {
+      const annotation = annotations[index];
+
+      setExportFeedback({
+        type: "loading",
+        message: `Generating segment ${index + 1} of ${annotations.length}...`,
+      });
+
+      // Build and validate the annotation record.
+      const annotationRecord = buildAnnotationExportRecord(annotation);
+
+      // Extract and verify this annotation's WAV.
+      const { blob: audioBlob, duration: extractedDuration } = extractSegmentAsWav(
+        decodedAudio,
+        annotation.startTime,
+        annotation.endTime
+      );
+
+      await verifyGeneratedWav(audioBlob, extractedDuration);
+
+      // Generate annotation JSON or CSV.
+      let annotationContent;
+
+      if (format === "json") {
+        annotationContent = JSON.stringify(annotationRecord, null, 2);
+        verifyAnnotationExport(annotationContent, "json");
+      } else {
+        const csvContent = buildAnnotationCsv(annotationRecord);
+        verifyAnnotationExport(csvContent, "csv");
+        annotationContent = `\uFEFF${csvContent}`;
+      }
+
+      // Build unique matching filenames.
+      const numberPart = String(index + 1).padStart(3, "0");
+      const labelPart = sanitizeFilePart(annotation.label);
+      const startPart = formatSecondsForFileName(annotation.startTime);
+      const endPart = formatSecondsForFileName(annotation.endTime);
+      const baseName = `${numberPart}_${labelPart}_${startPart}s-${endPart}s`;
+
+      const audioFileName = `${baseName}_audio.wav`;
+      const annotationFileName = `${baseName}_annotation.${format}`;
+
+      const audioPath = `segments/${audioFileName}`;
+      const annotationPath = `segments/${annotationFileName}`;
+
+      // Add both files to the ZIP.
+      zip.file(audioPath, audioBlob);
+      zip.file(annotationPath, annotationContent);
+
+      expectedFileNames.push(audioPath, annotationPath);
+    }
+
+    setExportFeedback({ type: "loading", message: "Packaging and verifying ZIP file..." });
+
+    // 4. Generate the finished ZIP.
+    const zipBlob = await zip.generateAsync({
+      type: "blob",
+      compression: "DEFLATE",
+      compressionOptions: { level: 6 },
+    });
+
+    // 5. Verify every expected file exists and is non-empty.
+    await verifyGeneratedZip(zipBlob, expectedFileNames);
+
+    // 6. Download only after everything succeeds.
+    const projectPart = sanitizeFilePart(fileName);
+    const zipFileName = `${projectPart}_all_annotations_and_audio.zip`;
+
+    downloadBlob(zipBlob, zipFileName);
+
+    setExportFeedback({
+      type: "success",
+      message: `All ${annotations.length} audio segments and annotations were generated successfully. Download started.`,
+    });
+  } catch (err) {
+    console.error("Failed to export all annotations and audio:", err);
+
+    setExportFeedback({
+      type: "error",
+      message: err?.message || "The annotations and audio ZIP could not be generated.",
+    });
+  } finally {
+    setIsExporting(false);
+  }
+};
+
   if (loading) return (
     <div className="flex h-screen items-center justify-center bg-slate-50">
       <p className="text-slate-500">Loading audio file...</p>
@@ -1989,6 +2113,7 @@ export default function AnnotationPage() {
                 setShowAnnotationFormatOptions(false);
                 setShowCombinedFormatOptions(false);
                 setShowAllAnnotationsFormatOptions(false);
+                setShowAllCombinedFormatOptions(false);
               }
               
               setShowDownloadMenu(!showDownloadMenu);
@@ -2038,6 +2163,7 @@ export default function AnnotationPage() {
                       onClick={() => {
                         setShowCombinedFormatOptions(false);
                         setShowAllAnnotationsFormatOptions(false);
+                        setShowAllCombinedFormatOptions(false);
                         setShowAnnotationFormatOptions((previous) => !previous);
                       }}
                       className="flex w-full items-start justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
@@ -2084,6 +2210,7 @@ export default function AnnotationPage() {
                       onClick={() => {
                         setShowAnnotationFormatOptions(false);
                         setShowAllAnnotationsFormatOptions(false);
+                        setShowAllCombinedFormatOptions(false);
                         setShowCombinedFormatOptions((previous) => !previous);
                       }}
                       className="flex w-full items-start justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
@@ -2133,6 +2260,7 @@ export default function AnnotationPage() {
                       onClick={() => {
                         setShowAnnotationFormatOptions(false);
                         setShowCombinedFormatOptions(false);
+                        setShowAllCombinedFormatOptions(false);
                         setShowAllAnnotationsFormatOptions((previous) => !previous);
                       }}
                       className="flex w-full items-start justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
@@ -2171,14 +2299,51 @@ export default function AnnotationPage() {
                     )}
                   </div>
 
-                  <button type="button" disabled className="flex w-full cursor-not-allowed items-start gap-3 rounded-lg px-3 py-2.5 text-left opacity-40"
-                  >
-                    <Archive className="mt-0.5 h-4 w-4 flex-shrink-0 text-indigo-500" />
-                    <div>
-                      <p className="text-sm font-medium text-slate-700">Download All Annotations and Audio</p>
-                      <p className="mt-0.5 text-xs text-slate-400">Package all annotations and audio segments together.</p>
-                    </div>
-                  </button>
+                  <div>
+                    <button
+                      type="button"
+                      disabled={annotations.length === 0 || isExporting}
+                      onClick={() => {
+                        setShowAnnotationFormatOptions(false);
+                        setShowCombinedFormatOptions(false);
+                        setShowAllAnnotationsFormatOptions(false);
+                        setShowAllCombinedFormatOptions((previous) => !previous);
+                      }}
+                      className="flex w-full items-start justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <span className="flex items-start gap-3">
+                        <Archive className="mt-0.5 h-4 w-4 flex-shrink-0 text-indigo-500" />
+                        <span>
+                          <span className="block text-sm font-medium text-slate-700">Download All Annotations and Audio</span>
+                          <span className="mt-0.5 block text-xs text-slate-400">Package all audio segments and their annotation data together.</span>
+                        </span>
+                      </span>
+
+                      <ChevronDown className={`mt-0.5 h-4 w-4 flex-shrink-0 text-slate-400 transition ${showAllCombinedFormatOptions ? "rotate-180" : ""}`} />
+                    </button>
+
+                    {showAllCombinedFormatOptions && annotations.length > 0 && (
+                      <div className="mx-3 mb-2 ml-10 grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadAllAnnotationsAndAudio("json")}
+                          disabled={isExporting}
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          JSON
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadAllAnnotationsAndAudio("csv")}
+                          disabled={isExporting}
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          CSV
+                        </button>
+                      </div>
+                    )}
+                  </div>
 
                 </div>
               </div>
