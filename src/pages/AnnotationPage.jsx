@@ -157,6 +157,7 @@ const findOverlap = (annotations, start, end, excludeId) =>
   annotations.find((a) => a.id !== excludeId && start < a.endTime && end > a.startTime);
 
 
+// ------------------ DOWNLOAD FEATURE ------------------
 // Load and decode the original recording
 const sanitizeFilePart = (value) => {
   const cleaned = String(value || "")
@@ -180,7 +181,6 @@ const formatSecondsForFileName = (seconds) => {
 const getAudioContextClass = () => {
   return window.AudioContext || window.webkitAudioContext;
 };
-
 
 // Load and decode the original recording
 const loadAndDecodeAudio = async (audioUrl) => {
@@ -235,8 +235,6 @@ const loadAndDecodeAudio = async (audioUrl) => {
     }
   }
 };
-
-
 
 // WAV Generator (creates actual RIFF, WAVE, PCM 16-bit)
 const writeAscii = (view, offset, text) => {
@@ -410,7 +408,6 @@ const extractSegmentAsWav = (
   };
 };
 
-
 // Verify the generated WAV
 const verifyGeneratedWav = async (
   blob,
@@ -523,6 +520,120 @@ const downloadBlob = (blob, filename) => {
   }, 1000);
 };
 
+// Convert Firestore's createdAt
+const formatExportDate = (value) => {
+  if (!value) return null;
+
+  if (typeof value.toDate === "function") {
+    const date = value.toDate();
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  }
+
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
+
+  return typeof value === "string" ? value : null;
+};
+
+// Build the annotation export object (start/end timestamps, label, comment, duration, creation time)
+const buildAnnotationExportRecord = (annotation) => {
+  if (!annotation) throw new Error("No annotation was selected.");
+
+  const startTime = Number(annotation.startTime);
+  const endTime = Number(annotation.endTime);
+
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime <= startTime) {
+    throw new Error("The selected annotation contains invalid timestamps.");
+  }
+
+  return {
+    startTimeSeconds: startTime,
+    startTime: formatTimestamp(startTime),
+    endTimeSeconds: endTime,
+    endTime: formatTimestamp(endTime),
+    durationSeconds: Number((endTime - startTime).toFixed(3)),
+    label: annotation.label || "",
+    comment: annotation.comment || "",
+    createdAt: formatExportDate(annotation.createdAt),
+  };
+};
+
+
+// comments may contain commas, "quotes" or line breaks
+const escapeCsvValue = (value) => {
+  if (value === null || value === undefined) return "";
+
+  const text = String(value);
+
+  if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+
+  return text;
+};
+
+// csv generator
+const buildAnnotationCsv = (record) => {
+  const row = {
+    startTimeSeconds: record.startTimeSeconds,
+    startTime: record.startTime,
+    endTimeSeconds: record.endTimeSeconds,
+    endTime: record.endTime,
+    durationSeconds: record.durationSeconds,
+    label: record.label,
+    comment: record.comment,
+    createdAt: record.createdAt || "",
+  };
+
+  const headers = Object.keys(row);
+  const values = headers.map((header) => escapeCsvValue(row[header]));
+
+  return `${headers.join(",")}\r\n${values.join(",")}`;
+};
+
+// validate the generated annotation export
+const verifyAnnotationExport = (content, format) => {
+  if (typeof content !== "string" || content.trim().length === 0) {
+    throw new Error("The generated annotation export is empty.");
+  }
+
+  if (format === "json") {
+    let parsed;
+
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      throw new Error("The generated JSON file is invalid.");
+    }
+
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      !parsed.startTime ||
+      !parsed.endTime ||
+      typeof parsed.label !== "string"
+    ) {
+      throw new Error("The generated JSON file is missing annotation information.");
+    }
+
+    return true;
+  }
+
+  if (format === "csv") {
+    const lines = content.split(/\r?\n/);
+
+    if (
+      lines.length < 2 ||
+      !lines[0].includes("startTime") ||
+      !lines[0].includes("endTime") ||
+      !lines[0].includes("label")
+    ) {
+      throw new Error("The generated CSV file is invalid.");
+    }
+
+    return true;
+  }
+
+  throw new Error("Unsupported annotation export format.");
+};
+
 
 export default function AnnotationPage() {
   const { projectId } = useParams();
@@ -597,6 +708,7 @@ export default function AnnotationPage() {
 
   // Download function states
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
+  const [showAnnotationFormatOptions, setShowAnnotationFormatOptions] = useState(false);
   const [exportSelectedAnnotationId, setExportSelectedAnnotationId] = useState(null);
   const [isExporting, setIsExporting] = useState(false);
   const [exportFeedback, setExportFeedback] = useState(null);
@@ -1349,35 +1461,23 @@ export default function AnnotationPage() {
         !downloadMenuRef.current.contains(event.target)
       ) {
         setShowDownloadMenu(false);
+        setShowAnnotationFormatOptions(false);
       }
     };
 
     const handleEscape = (event) => {
       if (event.key === "Escape") {
         setShowDownloadMenu(false);
+        setShowAnnotationFormatOptions(false);
       }
     };
 
-    document.addEventListener(
-      "mousedown",
-      handleOutsideClick
-    );
-
-    document.addEventListener(
-      "keydown",
-      handleEscape
-    );
+    document.addEventListener("mousedown", handleOutsideClick);
+    document.addEventListener("keydown", handleEscape);
 
     return () => {
-      document.removeEventListener(
-        "mousedown",
-        handleOutsideClick
-      );
-
-      document.removeEventListener(
-        "keydown",
-        handleEscape
-      );
+      document.removeEventListener("mousedown", handleOutsideClick);
+      document.removeEventListener("keydown", handleEscape);
     };
   }, [showDownloadMenu]);
 
@@ -1472,6 +1572,74 @@ export default function AnnotationPage() {
   }
 };
 
+ // actual Download Annotation Segment handler
+const handleDownloadAnnotation = async (format) => {
+  if (!exportSelectedAnnotation) {
+    setExportFeedback({ type: "error", message: "Select an annotation before exporting annotation data." });
+    return;
+  }
+
+  if (format !== "json" && format !== "csv") {
+    setExportFeedback({ type: "error", message: "Unsupported annotation export format." });
+    return;
+  }
+
+  setShowDownloadMenu(false);
+  setShowAnnotationFormatOptions(false);
+  setIsExporting(true);
+  setExportFeedback({ type: "loading", message: `Generating ${format.toUpperCase()} annotation export...` });
+
+  try {
+    // 1. Build a clean export record from the selected annotation.
+    const record = buildAnnotationExportRecord(exportSelectedAnnotation);
+
+    // 2. Convert the record to the requested format.
+    let content;
+    let mimeType;
+
+    if (format === "json") {
+      content = JSON.stringify(record, null, 2);
+      mimeType = "application/json;charset=utf-8";
+    } else {
+      content = buildAnnotationCsv(record);
+      mimeType = "text/csv;charset=utf-8";
+    }
+
+    // 3. Verify the generated data before downloading.
+    verifyAnnotationExport(content, format);
+
+    // UTF-8 BOM helps spreadsheet applications correctly read CSV characters.
+    const fileContent = format === "csv" ? `\uFEFF${content}` : content;
+    const blob = new Blob([fileContent], { type: mimeType });
+
+    if (blob.size === 0) throw new Error(`The generated ${format.toUpperCase()} file is empty.`);
+
+    // 4. Build a safe filename.
+    const projectPart = sanitizeFilePart(fileName);
+    const labelPart = sanitizeFilePart(exportSelectedAnnotation.label);
+    const startPart = formatSecondsForFileName(exportSelectedAnnotation.startTime);
+    const endPart = formatSecondsForFileName(exportSelectedAnnotation.endTime);
+    const exportFileName = `${projectPart}_${labelPart}_${startPart}s-${endPart}s_annotation.${format}`;
+
+    // 5. Start the browser download.
+    downloadBlob(blob, exportFileName);
+
+    setExportFeedback({
+      type: "success",
+      message: `${format.toUpperCase()} annotation generated successfully. Download started.`,
+    });
+  } catch (err) {
+    console.error("Failed to export annotation:", err);
+
+    setExportFeedback({
+      type: "error",
+      message: err?.message || "The annotation export could not be generated.",
+    });
+  } finally {
+    setIsExporting(false);
+  }
+};
+
   if (loading) return (
     <div className="flex h-screen items-center justify-center bg-slate-50">
       <p className="text-slate-500">Loading audio file...</p>
@@ -1508,8 +1676,11 @@ export default function AnnotationPage() {
         {/* Non-functional placeholders — separate tickets */}
         <div className="flex items-center gap-2">
           <div ref={downloadMenuRef} className="relative">
-            <button type="button" onClick={() => setShowDownloadMenu((previous) => !previous)}
-              disabled={isExporting} aria-expanded={showDownloadMenu}
+            <button type="button" 
+            onClick={() => { if (showDownloadMenu) setShowAnnotationFormatOptions(false);
+                                                   setShowDownloadMenu(!showDownloadMenu);}}
+              disabled={isExporting} 
+              aria-expanded={showDownloadMenu}
               className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Download className="h-4 w-4" />
@@ -1546,13 +1717,46 @@ export default function AnnotationPage() {
                   </button>
 
                   
-                  <button type="button" disabled className="flex w-full cursor-not-allowed items-start gap-3 rounded-lg px-3 py-2.5 text-left opacity-40">
-                    <FileText className="mt-0.5 h-4 w-4 flex-shrink-0 text-indigo-500" />
-                    <div>
-                      <p className="text-sm font-medium text-slate-700">Download Annotation</p>
-                      <p className="mt-0.5 text-xs text-slate-400">Export the selected annotationas JSON or CSV.</p>
-                    </div>
-                  </button>
+                  <div>
+                    <button
+                      type="button"
+                      disabled={!exportSelectedAnnotation || isExporting}
+                      onClick={() => setShowAnnotationFormatOptions((previous) => !previous)}
+                      className="flex w-full items-start justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <span className="flex items-start gap-3">
+                        <FileText className="mt-0.5 h-4 w-4 flex-shrink-0 text-indigo-500" />
+                        <span>
+                          <span className="block text-sm font-medium text-slate-700">Download Annotation</span>
+                          <span className="mt-0.5 block text-xs text-slate-400">Export the selected annotation as JSON or CSV.</span>
+                        </span>
+                      </span>
+
+                      <ChevronDown className={`mt-0.5 h-4 w-4 flex-shrink-0 text-slate-400 transition ${showAnnotationFormatOptions ? "rotate-180" : ""}`} />
+                    </button>
+
+                    {showAnnotationFormatOptions && exportSelectedAnnotation && (
+                      <div className="mx-3 mb-2 ml-10 grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadAnnotation("json")}
+                          disabled={isExporting}
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          JSON
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadAnnotation("csv")}
+                          disabled={isExporting}
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          CSV
+                        </button>
+                      </div>
+                    )}
+                  </div>
 
                   
                   <button type="button" disabled className="flex w-full cursor-not-allowed items-start gap-3 rounded-lg px-3 py-2.5 text-left opacity-40">
