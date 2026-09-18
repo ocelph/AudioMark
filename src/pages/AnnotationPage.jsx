@@ -6,6 +6,7 @@ import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
 import Spectrogram from "wavesurfer.js/dist/plugins/spectrogram.js";
 import { Download, History, Share2, Maximize2, Search, Plus, X, Pencil, Trash2, ZoomIn, ZoomOut,ChevronDown, Scissors, FileText, Archive } from "lucide-react";
+import JSZip from "jszip";
 
 // Built-in annotation class choices.
 // Project-level custom labels are created and selected through the Custom Label modal.
@@ -158,6 +159,7 @@ const findOverlap = (annotations, start, end, excludeId) =>
 
 
 // ------------------ DOWNLOAD FEATURE ------------------
+// ---------- Download audio segment ---------
 // Load and decode the original recording
 const sanitizeFilePart = (value) => {
   const cleaned = String(value || "")
@@ -534,6 +536,7 @@ const formatExportDate = (value) => {
   return typeof value === "string" ? value : null;
 };
 
+// ---------- Download specific annotation ---------
 // Build the annotation export object (start/end timestamps, label, comment, duration, creation time)
 const buildAnnotationExportRecord = (annotation) => {
   if (!annotation) throw new Error("No annotation was selected.");
@@ -634,6 +637,37 @@ const verifyAnnotationExport = (content, format) => {
   throw new Error("Unsupported annotation export format.");
 };
 
+// ---------- Download annotation and audio segment ---------
+const verifyGeneratedZip = async (zipBlob, expectedFileNames) => {
+  if (!(zipBlob instanceof Blob) || zipBlob.size === 0) {
+    throw new Error("The generated ZIP file is empty.");
+  }
+
+  let loadedZip;
+
+  try {
+    loadedZip = await JSZip.loadAsync(zipBlob);
+  } catch {
+    throw new Error("The generated ZIP file is invalid.");
+  }
+
+  for (const fileName of expectedFileNames) {
+    const file = loadedZip.file(fileName);
+
+    if (!file) {
+      throw new Error(`The ZIP file is missing ${fileName}.`);
+    }
+
+    const fileData = await file.async("uint8array");
+
+    if (fileData.length === 0) {
+      throw new Error(`The ZIP file contains an empty file: ${fileName}.`);
+    }
+  }
+
+  return true;
+};
+
 
 export default function AnnotationPage() {
   const { projectId } = useParams();
@@ -709,6 +743,7 @@ export default function AnnotationPage() {
   // Download function states
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [showAnnotationFormatOptions, setShowAnnotationFormatOptions] = useState(false);
+  const [showCombinedFormatOptions, setShowCombinedFormatOptions] = useState(false);
   const [exportSelectedAnnotationId, setExportSelectedAnnotationId] = useState(null);
   const [isExporting, setIsExporting] = useState(false);
   const [exportFeedback, setExportFeedback] = useState(null);
@@ -1462,6 +1497,7 @@ export default function AnnotationPage() {
       ) {
         setShowDownloadMenu(false);
         setShowAnnotationFormatOptions(false);
+        setShowCombinedFormatOptions(false);
       }
     };
 
@@ -1469,6 +1505,7 @@ export default function AnnotationPage() {
       if (event.key === "Escape") {
         setShowDownloadMenu(false);
         setShowAnnotationFormatOptions(false);
+        setShowCombinedFormatOptions(false);
       }
     };
 
@@ -1519,12 +1556,11 @@ export default function AnnotationPage() {
   }
 
   setShowDownloadMenu(false);
+  setShowAnnotationFormatOptions(false);
+  setShowCombinedFormatOptions(false);
   setIsExporting(true);
 
-  setExportFeedback({
-    type: "loading",
-    message: "Generating audio segment...",
-  });
+  setExportFeedback({type: "loading", message: "Generating audio segment...", });
 
   try {
      // 1. Download + decode the project's original recording.
@@ -1572,73 +1608,173 @@ export default function AnnotationPage() {
   }
 };
 
- // actual Download Annotation Segment handler
-const handleDownloadAnnotation = async (format) => {
-  if (!exportSelectedAnnotation) {
-    setExportFeedback({ type: "error", message: "Select an annotation before exporting annotation data." });
-    return;
-  }
-
-  if (format !== "json" && format !== "csv") {
-    setExportFeedback({ type: "error", message: "Unsupported annotation export format." });
-    return;
-  }
-
-  setShowDownloadMenu(false);
-  setShowAnnotationFormatOptions(false);
-  setIsExporting(true);
-  setExportFeedback({ type: "loading", message: `Generating ${format.toUpperCase()} annotation export...` });
-
-  try {
-    // 1. Build a clean export record from the selected annotation.
-    const record = buildAnnotationExportRecord(exportSelectedAnnotation);
-
-    // 2. Convert the record to the requested format.
-    let content;
-    let mimeType;
-
-    if (format === "json") {
-      content = JSON.stringify(record, null, 2);
-      mimeType = "application/json;charset=utf-8";
-    } else {
-      content = buildAnnotationCsv(record);
-      mimeType = "text/csv;charset=utf-8";
+  // actual Download Annotation Segment handler
+  const handleDownloadAnnotation = async (format) => {
+    if (!exportSelectedAnnotation) {
+      setExportFeedback({ type: "error", message: "Select an annotation before exporting annotation data." });
+      return;
     }
 
-    // 3. Verify the generated data before downloading.
-    verifyAnnotationExport(content, format);
+    if (format !== "json" && format !== "csv") {
+      setExportFeedback({ type: "error", message: "Unsupported annotation export format." });
+      return;
+    }
 
-    // UTF-8 BOM helps spreadsheet applications correctly read CSV characters.
-    const fileContent = format === "csv" ? `\uFEFF${content}` : content;
-    const blob = new Blob([fileContent], { type: mimeType });
+    setShowDownloadMenu(false);
+    setShowAnnotationFormatOptions(false);
+    setShowCombinedFormatOptions(false);
+    setIsExporting(true);
 
-    if (blob.size === 0) throw new Error(`The generated ${format.toUpperCase()} file is empty.`);
+    setExportFeedback({ type: "loading", message: `Generating ${format.toUpperCase()} annotation export...` });
 
-    // 4. Build a safe filename.
-    const projectPart = sanitizeFilePart(fileName);
-    const labelPart = sanitizeFilePart(exportSelectedAnnotation.label);
-    const startPart = formatSecondsForFileName(exportSelectedAnnotation.startTime);
-    const endPart = formatSecondsForFileName(exportSelectedAnnotation.endTime);
-    const exportFileName = `${projectPart}_${labelPart}_${startPart}s-${endPart}s_annotation.${format}`;
+    try {
+      // 1. Build a clean export record from the selected annotation.
+      const record = buildAnnotationExportRecord(exportSelectedAnnotation);
 
-    // 5. Start the browser download.
-    downloadBlob(blob, exportFileName);
+      // 2. Convert the record to the requested format.
+      let content;
+      let mimeType;
 
-    setExportFeedback({
-      type: "success",
-      message: `${format.toUpperCase()} annotation generated successfully. Download started.`,
-    });
-  } catch (err) {
-    console.error("Failed to export annotation:", err);
+      if (format === "json") {
+        content = JSON.stringify(record, null, 2);
+        mimeType = "application/json;charset=utf-8";
+      } else {
+        content = buildAnnotationCsv(record);
+        mimeType = "text/csv;charset=utf-8";
+      }
 
-    setExportFeedback({
-      type: "error",
-      message: err?.message || "The annotation export could not be generated.",
-    });
-  } finally {
-    setIsExporting(false);
-  }
-};
+      // 3. Verify the generated data before downloading.
+      verifyAnnotationExport(content, format);
+
+      // UTF-8 BOM helps spreadsheet applications correctly read CSV characters.
+      const fileContent = format === "csv" ? `\uFEFF${content}` : content;
+      const blob = new Blob([fileContent], { type: mimeType });
+
+      if (blob.size === 0) throw new Error(`The generated ${format.toUpperCase()} file is empty.`);
+
+      // 4. Build a safe filename.
+      const projectPart = sanitizeFilePart(fileName);
+      const labelPart = sanitizeFilePart(exportSelectedAnnotation.label);
+      const startPart = formatSecondsForFileName(exportSelectedAnnotation.startTime);
+      const endPart = formatSecondsForFileName(exportSelectedAnnotation.endTime);
+      const exportFileName = `${projectPart}_${labelPart}_${startPart}s-${endPart}s_annotation.${format}`;
+
+      // 5. Start the browser download.
+      downloadBlob(blob, exportFileName);
+
+      setExportFeedback({
+        type: "success",
+        message: `${format.toUpperCase()} annotation generated successfully. Download started.`,
+      });
+    } catch (err) {
+      console.error("Failed to export annotation:", err);
+
+      setExportFeedback({
+        type: "error",
+        message: err?.message || "The annotation export could not be generated.",
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // actual Download Annotation & Audio Segment handler
+  const handleDownloadAudioAndAnnotation = async (format) => {
+    if (!exportSelectedAnnotation) {
+      setExportFeedback({ type: "error", message: "Select an annotation before exporting audio and annotation data." });
+      return;
+    }
+
+    if (!audioUrl) {
+      setExportFeedback({ type: "error", message: "The project's audio file is unavailable." });
+      return;
+    }
+
+    if (format !== "json" && format !== "csv") {
+      setExportFeedback({ type: "error", message: "Unsupported annotation export format." });
+      return;
+    }
+
+    setShowDownloadMenu(false);
+    setShowAnnotationFormatOptions(false);
+    setShowCombinedFormatOptions(false);
+    setIsExporting(true);
+
+    setExportFeedback({ type: "loading", message: "Generating audio and annotation ZIP..." });
+
+    try {
+      // 1. Load and decode the project's original recording.
+      const decodedAudio = await loadAndDecodeAudio(audioUrl);
+
+      // 2. Extract and verify the selected audio segment.
+      const { blob: audioBlob, duration: extractedDuration } = extractSegmentAsWav(
+        decodedAudio,
+        exportSelectedAnnotation.startTime,
+        exportSelectedAnnotation.endTime
+      );
+
+      await verifyGeneratedWav(audioBlob, extractedDuration);
+
+      // 3. Generate and verify the annotation data.
+      const annotationRecord = buildAnnotationExportRecord(exportSelectedAnnotation);
+
+      let annotationContent;
+
+      if (format === "json") {
+        annotationContent = JSON.stringify(annotationRecord, null, 2);
+      } else {
+        annotationContent = `\uFEFF${buildAnnotationCsv(annotationRecord)}`;
+      }
+
+      verifyAnnotationExport(format === "csv" ? annotationContent.replace(/^\uFEFF/, "") : annotationContent, format);
+
+      // 4. Build filenames shared by the WAV, annotation file and ZIP.
+      const projectPart = sanitizeFilePart(fileName);
+      const labelPart = sanitizeFilePart(exportSelectedAnnotation.label);
+      const startPart = formatSecondsForFileName(exportSelectedAnnotation.startTime);
+      const endPart = formatSecondsForFileName(exportSelectedAnnotation.endTime);
+      const baseName = `${projectPart}_${labelPart}_${startPart}s-${endPart}s`;
+
+      const audioFileName = `${baseName}_audio.wav`;
+      const annotationFileName = `${baseName}_annotation.${format}`;
+      const zipFileName = `${baseName}_audio_and_annotation.zip`;
+
+      // 5. Add both files to the ZIP.
+      const zip = new JSZip();
+
+      zip.file(audioFileName, audioBlob);
+      zip.file(annotationFileName, annotationContent);
+
+      // 6. Generate the ZIP.
+      const zipBlob = await zip.generateAsync({
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: { level: 6 },
+      });
+
+      // 7. Verify the ZIP before downloading it.
+      await verifyGeneratedZip(zipBlob, [audioFileName, annotationFileName]);
+
+      // 8. Start the browser download.
+      downloadBlob(zipBlob, zipFileName);
+
+      setExportFeedback({
+        type: "success",
+        message: "Audio and annotation ZIP generated successfully. Download started.",
+      });
+    } catch (err) {
+      console.error("Failed to export audio and annotation ZIP:", err);
+
+      setExportFeedback({
+        type: "error",
+        message: err?.message || "The audio and annotation ZIP could not be generated.",
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+
 
   if (loading) return (
     <div className="flex h-screen items-center justify-center bg-slate-50">
@@ -1677,8 +1813,14 @@ const handleDownloadAnnotation = async (format) => {
         <div className="flex items-center gap-2">
           <div ref={downloadMenuRef} className="relative">
             <button type="button" 
-            onClick={() => { if (showDownloadMenu) setShowAnnotationFormatOptions(false);
-                                                   setShowDownloadMenu(!showDownloadMenu);}}
+            onClick={() => { 
+              if (showDownloadMenu) {
+                setShowAnnotationFormatOptions(false);
+                setShowCombinedFormatOptions(false);
+              }
+              
+              setShowDownloadMenu(!showDownloadMenu);
+            }}
               disabled={isExporting} 
               aria-expanded={showDownloadMenu}
               className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
@@ -1721,7 +1863,10 @@ const handleDownloadAnnotation = async (format) => {
                     <button
                       type="button"
                       disabled={!exportSelectedAnnotation || isExporting}
-                      onClick={() => setShowAnnotationFormatOptions((previous) => !previous)}
+                      onClick={() => {
+                                setShowCombinedFormatOptions(false);
+                                setShowAnnotationFormatOptions((previous) => !previous);
+                              }}
                       className="flex w-full items-start justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       <span className="flex items-start gap-3">
@@ -1759,13 +1904,49 @@ const handleDownloadAnnotation = async (format) => {
                   </div>
 
                   
-                  <button type="button" disabled className="flex w-full cursor-not-allowed items-start gap-3 rounded-lg px-3 py-2.5 text-left opacity-40">
-                    <Archive className="mt-0.5 h-4 w-4 flex-shrink-0 text-indigo-500" />
-                    <div>
-                      <p className="text-sm font-medium text-slate-700">Download Audio and Annotation</p>
-                      <p className="mt-0.5 text-xs text-slate-400">Export the selected audio and annotation together as ZIP.</p>
-                    </div>
-                  </button>
+                  <div>
+                    <button
+                      type="button"
+                      disabled={!exportSelectedAnnotation || isExporting}
+                      onClick={() => {
+                        setShowAnnotationFormatOptions(false);
+                        setShowCombinedFormatOptions((previous) => !previous);
+                      }}
+                      className="flex w-full items-start justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <span className="flex items-start gap-3">
+                        <Archive className="mt-0.5 h-4 w-4 flex-shrink-0 text-indigo-500" />
+                        <span>
+                          <span className="block text-sm font-medium text-slate-700">Download Audio and Annotation</span>
+                          <span className="mt-0.5 block text-xs text-slate-400">Export the selected audio and annotation together as ZIP.</span>
+                        </span>
+                      </span>
+
+                      <ChevronDown className={`mt-0.5 h-4 w-4 flex-shrink-0 text-slate-400 transition ${showCombinedFormatOptions ? "rotate-180" : ""}`} />
+                    </button>
+
+                    {showCombinedFormatOptions && exportSelectedAnnotation && (
+                      <div className="mx-3 mb-2 ml-10 grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadAudioAndAnnotation("json")}
+                          disabled={isExporting}
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          JSON
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadAudioAndAnnotation("csv")}
+                          disabled={isExporting}
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          CSV
+                        </button>
+                      </div>
+                    )}
+                  </div>
 
                 </div>
 
