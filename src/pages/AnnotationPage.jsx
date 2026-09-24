@@ -866,11 +866,9 @@ export default function AnnotationPage() {
           setUid(user.uid);
           setUserInitials(getInitials(user.displayName || user.email));
           const lastAccessedAt = new Date().toISOString();
-          try {
-            await updateDoc(projectRef, { last_accessed_at: lastAccessedAt });
-          } catch (err) {
+          updateDoc(projectRef, { last_accessed_at: lastAccessedAt }).catch((err) => {
             console.error("Failed to update last accessed date:", err);
-          }
+          });
         } else {
           setError("Project not found.");
         }
