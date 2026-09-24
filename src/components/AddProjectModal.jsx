@@ -241,7 +241,7 @@ export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl">
+      <div className="max-h-[calc(100vh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl bg-white shadow-2xl">
         <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
           <h2 className="text-xl font-bold text-slate-900">
             Create New Project
@@ -321,8 +321,8 @@ export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
             {filePreview && (
               <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
                 <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-emerald-900">
+                  <div className="min-w-0 flex-1">
+                    <p className="break-words text-sm font-medium text-emerald-900">
                       {filePreview.name}
                     </p>
                     <p className="mt-0.5 text-xs text-emerald-700">
