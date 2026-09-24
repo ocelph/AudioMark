@@ -262,16 +262,16 @@ export default function DashboardPage() {
                     </div>
 
                     <div className="flex min-w-[220px] flex-col items-start gap-2 text-left text-base text-slate-600 lg:items-end lg:text-right">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">Last accessed</span>
-                        <span>
-                          {document.last_accessed_at
-                            ? new Date(
-                                document.last_accessed_at.toDate?.() || document.last_accessed_at
-                              ).toLocaleDateString()
-                            : "Never"}
-                        </span>
-                      </div>
+                      {document.last_accessed_at && (
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">Last accessed</span>
+                          <span>
+                            {new Date(
+                              document.last_accessed_at.toDate?.() || document.last_accessed_at
+                            ).toLocaleDateString()}
+                          </span>
+                        </div>
+                      )}
 
                       <div className="flex items-center gap-2">
                         <span className="font-medium">Created on</span>

@@ -857,13 +857,20 @@ export default function AnnotationPage() {
           navigate("/login");
           return;
         }
-        const projectSnap = await getDoc(doc(db, "users", user.uid, "projects", projectId));
+        const projectRef = doc(db, "users", user.uid, "projects", projectId);
+        const projectSnap = await getDoc(projectRef);
         if (projectSnap.exists()) {
           const data = projectSnap.data();
           setFileName(data.project_title);
           setAudioUrl(data.download_url);
           setUid(user.uid);
           setUserInitials(getInitials(user.displayName || user.email));
+          const lastAccessedAt = new Date().toISOString();
+          try {
+            await updateDoc(projectRef, { last_accessed_at: lastAccessedAt });
+          } catch (err) {
+            console.error("Failed to update last accessed date:", err);
+          }
         } else {
           setError("Project not found.");
         }
