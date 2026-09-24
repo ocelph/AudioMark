@@ -20,6 +20,14 @@ const formatDuration = (seconds) => {
   return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
 };
 
+const timestampToMillis = (value) => {
+  if (!value) return 0;
+  if (typeof value.toMillis === "function") return value.toMillis();
+
+  const millis = new Date(value).getTime();
+  return Number.isNaN(millis) ? 0 : millis;
+};
+
 export default function DashboardPage() {
   const navigate = useNavigate();
   const [username, setUsername] = useState("User");
@@ -77,7 +85,16 @@ export default function DashboardPage() {
   }, []);
 
   const visibleDocuments = useMemo(() => {
-    return projects;
+    return [...projects].sort((first, second) => {
+      const firstDate = timestampToMillis(
+        first.last_accessed_at || first.created_at
+      );
+      const secondDate = timestampToMillis(
+        second.last_accessed_at || second.created_at
+      );
+
+      return secondDate - firstDate;
+    });
   }, [projects]);
 
   const handleEdit = async (formData) => {
