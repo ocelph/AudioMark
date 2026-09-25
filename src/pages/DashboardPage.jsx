@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { Link, useNavigate } from "react-router-dom";
-import { collection, query, orderBy, onSnapshot, updateDoc, deleteDoc, doc } from "firebase/firestore";
+import { collection, collectionGroup, query, where, orderBy, onSnapshot, updateDoc, deleteDoc, doc, getDoc } from "firebase/firestore";
 import { deleteObject, ref } from "firebase/storage";
 import { FileText, LogOut, Plus, UserCircle } from "lucide-react";
 import { auth, db, storage } from "../services/firebase";
@@ -9,6 +9,7 @@ import AddProjectModal from "../components/AddProjectModal";
 import ProjectActionsMenu from "../components/ProjectActionsMenu";
 import EditProjectModal from "../components/EditProjectModal";
 import DeleteProjectModal from "../components/DeleteProjectModal";
+import ShareProjectModal from "../components/ShareProjectModal";
 import Logo from '../components/Logo';
 import backgroundImg from "../assets/login_page_background.png";
 
@@ -31,6 +32,7 @@ const timestampToMillis = (value) => {
 export default function DashboardPage() {
   const navigate = useNavigate();
   const [username, setUsername] = useState("User");
+  const [currentUserId, setCurrentUserId] = useState(null);
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -40,12 +42,18 @@ export default function DashboardPage() {
   const [selectedProject, setSelectedProject] = useState(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [projectFilter, setProjectFilter] = useState("all");
 
   useEffect(() => {
     document.title = "AudioMark - Dashboard";
 
+    let unsubscribeOwned = () => {};
+    let unsubscribeShared = () => {};
+
     const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUserId(user?.uid || null);
       if (user?.displayName) {
         setUsername(user.displayName.split(" ")[0]);
       } else if (user?.email) {
@@ -54,48 +62,110 @@ export default function DashboardPage() {
         setUsername("User");
       }
 
-      //Fetch user's projects
-      if (user) {
-        const projectsRef = collection(db, "users", user.uid, "projects");
-        const q = query(projectsRef, orderBy("created_at", "desc"));
-
-        const unsubscribeProjects = onSnapshot(
-          q,
-          (snapshot) => {
-            const projectsList = snapshot.docs.map((doc) => ({
-              id: doc.id,
-              ...doc.data(),
-            }));
-            setProjects(projectsList);
-            setLoading(false);
-          },
-          (error) => {
-            console.error("Error fetching projects:", error);
-            setLoading(false);
-          }
-        );
-
-        return () => unsubscribeProjects();
-      } else {
+      if (!user) {
+        unsubscribeOwned();
+        unsubscribeShared();
+        setProjects([]);
         setLoading(false);
+        return;
       }
+
+      const projectLists = { owned: [], shared: [] };
+      const updateProjects = () => {
+        const merged = new Map();
+        [...projectLists.owned, ...projectLists.shared].forEach((project) => {
+          merged.set(`${project.ownerId}:${project.id}`, project);
+        });
+        setProjects([...merged.values()]);
+        setLoading(false);
+      };
+
+      const ownedQuery = query(
+        collection(db, "users", user.uid, "projects"),
+        orderBy("created_at", "desc")
+      );
+      const sharedQuery = query(
+        collectionGroup(db, "projects"),
+        where("shared_with", "array-contains", (user.email || "").toLowerCase())
+      );
+
+      unsubscribeOwned = onSnapshot(
+        ownedQuery,
+        (snapshot) => {
+          projectLists.owned = snapshot.docs.map((projectDoc) => ({
+            id: projectDoc.id,
+            ownerId: user.uid,
+            isOwned: true,
+            ...projectDoc.data(),
+          }));
+          updateProjects();
+        },
+        (error) => {
+          console.error("Error fetching owned projects:", error);
+          setLoading(false);
+        }
+      );
+
+      unsubscribeShared = onSnapshot(
+        sharedQuery,
+        async (snapshot) => {
+          projectLists.shared = await Promise.all(snapshot.docs.map(async (projectDoc) => {
+            const ownerId = projectDoc.ref.parent.parent.id;
+            const project = projectDoc.data();
+            let ownerName = project.owner_name;
+
+            if (!ownerName) {
+              try {
+                const ownerSnapshot = await getDoc(doc(db, "users", ownerId));
+                ownerName = ownerSnapshot.data()?.firstName || "owner";
+              } catch (error) {
+                console.error("Error fetching shared project owner:", error);
+                ownerName = "owner";
+              }
+            }
+
+            return {
+              id: projectDoc.id,
+              ownerId,
+              isOwned: ownerId === user.uid,
+              owner_name: ownerName,
+              ...project,
+            };
+          }));
+          updateProjects();
+        },
+        (error) => {
+          console.error("Error fetching shared projects:", error);
+          setLoading(false);
+        }
+      );
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      unsubscribeOwned();
+      unsubscribeShared();
+    };
   }, []);
 
   const visibleDocuments = useMemo(() => {
-    return [...projects].sort((first, second) => {
+    return projects
+      .filter((project) => {
+        if (projectFilter === "owned") return project.isOwned;
+        if (projectFilter === "shared") return !project.isOwned;
+        return true;
+      })
+      .sort((first, second) => {
       const firstDate = timestampToMillis(
-        first.last_accessed_at || first.created_at
+        first.last_accessed_by?.[currentUserId] || first.last_accessed_at || first.created_at
       );
       const secondDate = timestampToMillis(
-        second.last_accessed_at || second.created_at
+        second.last_accessed_by?.[currentUserId] || second.last_accessed_at || second.created_at
       );
 
-      return secondDate - firstDate;
-    });
-  }, [projects]);
+        return secondDate - firstDate;
+      });
+  }, [projects, projectFilter, currentUserId]);
 
   const handleEdit = async (formData) => {
     if (!selectedProject) return;
@@ -233,6 +303,26 @@ export default function DashboardPage() {
           </div>
 
           <div className="space-y-5">
+            <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Project filter">
+              {[
+                ["all", "All projects"],
+                ["owned", "Owned by me"],
+                ["shared", "Shared to me"],
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setProjectFilter(value)}
+                  className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${projectFilter === value
+                    ? "border-indigo-600 bg-indigo-600 text-white"
+                    : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                    }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
             {loading ? (
               <div className="text-center py-12">
                 <p className="text-slate-600">Loading your projects...</p>
@@ -254,7 +344,7 @@ export default function DashboardPage() {
               visibleDocuments.map((document) => (
                 <Link
                   key={document.id}
-                  to={`/project/${document.id}/annotation`}
+                  to={`/project/${document.id}/annotation?ownerId=${document.ownerId}`}
                   className="rounded-[26px] border border-slate-200 bg-white/90 p-4 shadow-[0_14px_30px_rgba(15,23,42,0.06)] transition hover:-translate-y-0.5 hover:shadow-[0_18px_35px_rgba(15,23,42,0.08)] sm:p-5 block"
                 >
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -274,17 +364,24 @@ export default function DashboardPage() {
                       )}
 
                       <div className="mt-1 text-sm text-slate-600">
-                        Owner: <span className="font-medium">{username}</span>
+                        {document.isOwned ? (
+                          <>Owner: <span className="font-medium">{username}</span></>
+                        ) : (
+                          <>Owner: <span className="font-medium">{document.owner_name || "owner"}</span></>
+                        )}
                       </div>
                     </div>
 
                     <div className="flex min-w-[220px] flex-col items-start gap-2 text-left text-base text-slate-600 lg:items-end lg:text-right">
-                      {document.last_accessed_at && (
+                      {(document.last_accessed_by?.[currentUserId] || document.last_accessed_at) && (
                         <div className="flex items-center gap-2">
                           <span className="font-medium">Last accessed</span>
                           <span>
                             {new Date(
-                              document.last_accessed_at.toDate?.() || document.last_accessed_at
+                              document.last_accessed_by?.[currentUserId]?.toDate?.() ||
+                              document.last_accessed_by?.[currentUserId] ||
+                              document.last_accessed_at?.toDate?.() ||
+                              document.last_accessed_at
                             ).toLocaleDateString()}
                           </span>
                         </div>
@@ -300,20 +397,26 @@ export default function DashboardPage() {
                       </div>
 
                       <div className="mt-2 flex items-center gap-2">
-                        <div onClick={(e) => e.preventDefault()}>
-                          <ProjectActionsMenu
-                            projectId={document.id}
-                            projectTitle={document.project_title}
-                            onEdit={() => {
-                              openProjectActions(document);
-                              setShowEditModal(true);
-                            }}
-                            onDelete={() => {
-                              openProjectActions(document);
-                              setShowDeleteModal(true);
-                            }}
-                          />
-                        </div>
+                        {document.isOwned && (
+                          <div onClick={(e) => e.preventDefault()}>
+                            <ProjectActionsMenu
+                              projectId={document.id}
+                              projectTitle={document.project_title}
+                              onEdit={() => {
+                                openProjectActions(document);
+                                setShowEditModal(true);
+                              }}
+                              onShare={() => {
+                                openProjectActions(document);
+                                setShowShareModal(true);
+                              }}
+                              onDelete={() => {
+                                openProjectActions(document);
+                                setShowDeleteModal(true);
+                              }}
+                            />
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -351,6 +454,21 @@ export default function DashboardPage() {
           projectTitle={selectedProject?.project_title || ""}
           onDelete={handleDelete}
           loading={actionLoading}
+        />
+
+        <ShareProjectModal
+          isOpen={showShareModal}
+          onClose={() => {
+            setShowShareModal(false);
+            setSelectedProject(null);
+          }}
+          projectId={selectedProject?.id}
+          ownerId={auth.currentUser?.uid}
+          projectTitle={selectedProject?.project_title || ""}
+          sharedWith={selectedProject?.shared_with || []}
+          onSharedWithChange={(sharedWith) =>
+            setSelectedProject((project) => (project ? { ...project, shared_with: sharedWith } : project))
+          }
         />
       </div>
     </div>

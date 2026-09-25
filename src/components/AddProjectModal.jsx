@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { X, Plus, Upload, AlertCircle } from "lucide-react";
 import { auth, db, storage } from "../services/firebase";
-import { collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { collection, addDoc, serverTimestamp, doc, getDoc } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 const SUPPORTED_AUDIO_EXTENSIONS = ["wav", "mp3", "flac", "ogg", "webm", "m4a"];
@@ -158,6 +158,10 @@ export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
         return;
       }
 
+      const userSnapshot = await getDoc(doc(db, "users", user.uid));
+      const ownerName =
+        userSnapshot.data()?.firstName || user.displayName?.split(" ")[0] || "owner";
+
       if (!formData.project_title.trim()) {
         setError("Project title is required");
         setLoading(false);
@@ -203,6 +207,8 @@ export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
       await addDoc(projectsRef, {
         project_title: formData.project_title.trim(),
         description: formData.description.trim() || null,
+        owner_name: ownerName,
+        shared_with: [],
         storage_path: storagePath,
         download_url: downloadUrl,
         metadata: audioMeta,
