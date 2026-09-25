@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
-import { MoreHorizontal, Edit, Trash2 } from "lucide-react";
+import { MoreHorizontal, Edit, Share2, Trash2 } from "lucide-react";
 
-export default function ProjectActionsMenu({ projectId, projectTitle, onEdit, onDelete }) {
+export default function ProjectActionsMenu({ projectId, projectTitle, onEdit, onShare, onDelete }) {
 const [isOpen, setIsOpen] = useState(false);
 const menuRef = useRef(null);
 
@@ -41,6 +41,15 @@ return (
         >
             <Edit className="h-4 w-4 text-slate-500" />
             Edit
+        </button>
+
+        <button
+            type="button"
+            onClick={() => handleAction(onShare)}
+            className="flex w-full items-center gap-3 border-b border-slate-100 px-4 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-50"
+        >
+            <Share2 className="h-4 w-4 text-slate-500" />
+            Share
         </button>
 
         <button

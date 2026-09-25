@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { auth, db } from "../services/firebase";
 import { doc, getDoc, collection, addDoc, updateDoc, deleteDoc, serverTimestamp, onSnapshot, query, orderBy } from "firebase/firestore";
+import ShareProjectModal from "../components/ShareProjectModal";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
 import Spectrogram from "wavesurfer.js/dist/plugins/spectrogram.js";
@@ -769,11 +770,15 @@ const verifyAllAnnotationsExport = (content, format, expectedCount) => {
 export default function AnnotationPage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   const [uid, setUid] = useState(null);
   const [userInitials, setUserInitials] = useState("U");
   const [audioUrl, setAudioUrl] = useState(null);
   const [fileName, setFileName] = useState("");
+  const [sharedWith, setSharedWith] = useState([]);
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [isProjectOwner, setIsProjectOwner] = useState(false);
   const [annotations, setAnnotations] = useState([]);
   const [selectedAnnotation, setSelectedAnnotation] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
@@ -857,16 +862,21 @@ export default function AnnotationPage() {
           navigate("/login");
           return;
         }
-        const projectRef = doc(db, "users", user.uid, "projects", projectId);
+        const projectOwnerId = searchParams.get("ownerId") || user.uid;
+        const projectRef = doc(db, "users", projectOwnerId, "projects", projectId);
         const projectSnap = await getDoc(projectRef);
         if (projectSnap.exists()) {
           const data = projectSnap.data();
           setFileName(data.project_title);
+          setSharedWith(data.shared_with || []);
           setAudioUrl(data.download_url);
-          setUid(user.uid);
+          setUid(projectOwnerId);
+          setIsProjectOwner(projectOwnerId === user.uid);
           setUserInitials(getInitials(user.displayName || user.email));
           const lastAccessedAt = new Date().toISOString();
-          updateDoc(projectRef, { last_accessed_at: lastAccessedAt }).catch((err) => {
+          updateDoc(projectRef, {
+            [`last_accessed_by.${user.uid}`]: lastAccessedAt,
+          }).catch((err) => {
             console.error("Failed to update last accessed date:", err);
           });
         } else {
@@ -880,7 +890,7 @@ export default function AnnotationPage() {
       }
     };
     loadProject();
-  }, [projectId, navigate]);
+  }, [projectId, navigate, searchParams]);
 
   // Load annotations in real time (only once we know the uid)
   useEffect(() => {
@@ -2357,9 +2367,15 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
           <button className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 transition">
             <History className="h-4 w-4" /> Log History
           </button>
-          <button className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 transition">
-            <Share2 className="h-4 w-4" /> Share
-          </button>
+          {isProjectOwner && (
+            <button
+              type="button"
+              onClick={() => setShowShareModal(true)}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 transition hover:bg-slate-50"
+            >
+              <Share2 className="h-4 w-4" /> Share
+            </button>
+          )}
           <button className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 transition">
             <Maximize2 className="h-4 w-4" /> Expand All Annotations
           </button>
@@ -3133,6 +3149,16 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
           </div>
         </div>
       )}
+
+      <ShareProjectModal
+        isOpen={showShareModal}
+        onClose={() => setShowShareModal(false)}
+        projectId={projectId}
+        ownerId={uid}
+        projectTitle={fileName}
+        sharedWith={sharedWith}
+        onSharedWithChange={setSharedWith}
+      />
     </div>
   );
 }
