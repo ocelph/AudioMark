@@ -72,6 +72,8 @@ export default function DashboardPage() {
         return;
       }
 
+      const accountFirstName =
+        user.displayName?.split(" ")[0] || user.email?.split("@")[0] || "owner";
       setSharedProjectsError("");
 
       const projectLists = { owned: [], shared: [] };
@@ -99,7 +101,7 @@ export default function DashboardPage() {
             id: projectDoc.id,
             ownerId: user.uid,
             isOwned: true,
-            owner_name: projectDoc.data().owner_name || username,
+            owner_name: accountFirstName,
             ...projectDoc.data(),
           }));
           snapshot.docs.forEach((projectDoc) => {
@@ -115,7 +117,7 @@ export default function DashboardPage() {
                   ownerId: user.uid,
                   projectId: projectDoc.id,
                   projectTitle: project.project_title || "",
-                  owner_name: project.owner_name || username,
+                  owner_name: accountFirstName,
                   role: permission?.role || "viewer",
                 },
                 { merge: true }

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { auth, db } from "../services/firebase";
-import { doc, getDoc, collection, addDoc, updateDoc, deleteDoc, serverTimestamp, onSnapshot, query, orderBy } from "firebase/firestore";
+import { doc, getDoc, collection, addDoc, updateDoc, deleteDoc, serverTimestamp, onSnapshot, query } from "firebase/firestore";
 import ShareProjectModal from "../components/ShareProjectModal";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
@@ -907,12 +907,15 @@ export default function AnnotationPage() {
   // Load annotations in real time (only once we know the uid)
   useEffect(() => {
     if (!uid) return;
-    const q = query(
-      collection(db, "users", uid, "projects", projectId, "annotations"),
-      orderBy("createdAt", "asc")
-    );
+    const q = query(collection(db, "users", uid, "projects", projectId, "annotations"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const data = snapshot.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .sort((first, second) => {
+          const firstTime = first.createdAt?.toMillis?.() || 0;
+          const secondTime = second.createdAt?.toMillis?.() || 0;
+          return firstTime - secondTime;
+        });
       setAnnotations(data);
     });
     return () => unsubscribe();
@@ -1425,7 +1428,14 @@ export default function AnnotationPage() {
   };
 
   const handleCreateAnnotation = async () => {
-    if (!uid || !canEditProject) return;
+    if (!uid) return;
+    if (!canEditProject) {
+      setExportFeedback({
+        type: "error",
+        message: "You have Viewer access. Ask the owner to change your permission to Editor.",
+      });
+      return;
+    }
 
     const start = parseFloat(createStart);
     const end = parseFloat(createEnd);
@@ -1459,6 +1469,9 @@ export default function AnnotationPage() {
         label,
         annotationClass,
         comment: createComment.trim(),
+        createdByUid: auth.currentUser?.uid || null,
+        createdByName: auth.currentUser?.displayName?.split(" ")[0] || null,
+        createdByEmail: auth.currentUser?.email || null,
         createdAt: serverTimestamp(),
       });
 
@@ -1475,6 +1488,10 @@ export default function AnnotationPage() {
       setActiveSelection(null);
     } catch (err) {
       console.error("Failed to create annotation:", err);
+      setExportFeedback({
+        type: "error",
+        message: `Annotation could not be saved (${err.code || "unknown"}): ${err.message}`,
+      });
     }
   };
 
@@ -2840,7 +2857,9 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
                             </td>
                             <td className="px-3 py-2">
                               <div className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-100 text-[10px] font-semibold text-indigo-700">
-                                {userInitials}
+                                {getInitials(
+                                  ann.createdByName || ann.createdByEmail || "User"
+                                )}
                               </div>
                             </td>
                             <td className="max-w-[220px] truncate px-3 py-2 text-slate-500">{ann.comment}</td>
