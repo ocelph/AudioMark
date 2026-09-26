@@ -777,8 +777,10 @@ export default function AnnotationPage() {
   const [audioUrl, setAudioUrl] = useState(null);
   const [fileName, setFileName] = useState("");
   const [sharedWith, setSharedWith] = useState([]);
+  const [sharedPermissions, setSharedPermissions] = useState([]);
   const [showShareModal, setShowShareModal] = useState(false);
   const [isProjectOwner, setIsProjectOwner] = useState(false);
+  const [projectRole, setProjectRole] = useState("viewer");
   const [annotations, setAnnotations] = useState([]);
   const [selectedAnnotation, setSelectedAnnotation] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
@@ -869,9 +871,17 @@ export default function AnnotationPage() {
           const data = projectSnap.data();
           setFileName(data.project_title);
           setSharedWith(data.shared_with || []);
+          setSharedPermissions(data.shared_permissions || []);
           setAudioUrl(data.download_url);
           setUid(projectOwnerId);
           setIsProjectOwner(projectOwnerId === user.uid);
+          setProjectRole(
+            projectOwnerId === user.uid
+              ? "editor"
+              : data.shared_permissions?.find(
+                (permission) => permission.email === user.email?.toLowerCase()
+              )?.role || "viewer"
+          );
           setUserInitials(getInitials(user.displayName || user.email));
           const lastAccessedAt = new Date().toISOString();
           updateDoc(projectRef, {
@@ -891,6 +901,8 @@ export default function AnnotationPage() {
     };
     loadProject();
   }, [projectId, navigate, searchParams]);
+
+  const canEditProject = isProjectOwner || projectRole === "editor";
 
   // Load annotations in real time (only once we know the uid)
   useEffect(() => {
@@ -1413,7 +1425,7 @@ export default function AnnotationPage() {
   };
 
   const handleCreateAnnotation = async () => {
-    if (!uid) return;
+    if (!uid || !canEditProject) return;
 
     const start = parseFloat(createStart);
     const end = parseFloat(createEnd);
@@ -1467,6 +1479,7 @@ export default function AnnotationPage() {
   };
 
   const handleEditOpen = (annotation) => {
+    if (!canEditProject) return;
     setSelectedAnnotation(annotation);
     setEditLabel(annotation.label);
     setEditAnnotationClass(
@@ -1519,6 +1532,7 @@ export default function AnnotationPage() {
 
   // Now persists to Firestore, then updates what's shown in the panel.
   const handleSaveEdit = async () => {
+    if (!canEditProject) return;
     const start = parseFloat(editStart);
     const end = parseFloat(editEnd);
 
@@ -1569,11 +1583,13 @@ export default function AnnotationPage() {
   };
 
   const handleDeleteClick = (annotation) => {
+    if (!canEditProject) return;
     setAnnotationToDelete(annotation);
     setShowDeleteConfirm(true);
   };
 
   const handleConfirmDelete = async () => {
+    if (!canEditProject) return;
     try {
       await deleteDoc(doc(db, "users", uid, "projects", projectId, "annotations", annotationToDelete.id));
       
@@ -2408,6 +2424,12 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
       <div className="flex flex-1 overflow-hidden">
         {/* Left panel — create annotation */}
         <div style={{ width: leftWidth }} className="flex-shrink-0 overflow-y-auto border-r border-slate-200 bg-white px-4 py-4">
+          {!canEditProject && (
+            <p className="mb-4 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">
+              Viewer access: you can view and export annotations, but cannot edit this project.
+            </p>
+          )}
+          <fieldset disabled={!canEditProject} className="contents">
           <h2 className="mb-3 text-sm font-semibold text-slate-700">Timestamps</h2>
           <div className="mb-4 space-y-3">
             <TimestampInput
@@ -2597,6 +2619,7 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
           <p className="mt-2 text-xs text-slate-400">
             Drag across the waveform to populate the timestamps, then refine them here if needed.
           </p>
+          </fieldset>
         </div>
 
         {/* Drag handle — resize left panel */}
@@ -2823,22 +2846,26 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
                             <td className="max-w-[220px] truncate px-3 py-2 text-slate-500">{ann.comment}</td>
                             <td className="px-3 py-2">
                               <div className="flex items-center gap-1">
-                                <button
-                                  onClick={() => handleEditOpen(ann)}
-                                  className="rounded-lg p-1.5 text-slate-400 hover:bg-indigo-50 hover:text-indigo-600 transition"
-                                  title="Edit annotation"
-                                  aria-label={`Edit ${ann.label || "annotation"}`}
-                                >
-                                  <Pencil className="h-4 w-4" />
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteClick(ann)}
-                                  className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-500 transition"
-                                  title="Delete annotation"
-                                  aria-label={`Delete ${ann.label || "annotation"}`}
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </button>
+                                {canEditProject && (
+                                  <>
+                                    <button
+                                      onClick={() => handleEditOpen(ann)}
+                                      className="rounded-lg p-1.5 text-slate-400 hover:bg-indigo-50 hover:text-indigo-600 transition"
+                                      title="Edit annotation"
+                                      aria-label={`Edit ${ann.label || "annotation"}`}
+                                    >
+                                      <Pencil className="h-4 w-4" />
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteClick(ann)}
+                                      className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-500 transition"
+                                      title="Delete annotation"
+                                      aria-label={`Delete ${ann.label || "annotation"}`}
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </button>
+                                  </>
+                                )}
                               </div>
                             </td>
                           </tr>
@@ -2851,7 +2878,7 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
           </div>
         </div>
 
-        {selectedAnnotation && isEditing && (
+        {canEditProject && selectedAnnotation && isEditing && (
           <>
             {/* Drag handle — resize edit panel */}
             <div
@@ -3157,7 +3184,11 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
         ownerId={uid}
         projectTitle={fileName}
         sharedWith={sharedWith}
-        onSharedWithChange={setSharedWith}
+        sharedPermissions={sharedPermissions}
+        onSharedWithChange={(recipients, permissions) => {
+          setSharedWith(recipients);
+          setSharedPermissions(permissions);
+        }}
       />
     </div>
   );

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Mail, Share2, X } from "lucide-react";
-import { arrayRemove, arrayUnion, doc, updateDoc } from "firebase/firestore";
+import { arrayRemove, arrayUnion, deleteDoc, doc, getDoc, setDoc, updateDoc } from "firebase/firestore";
 import { db } from "../services/firebase";
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -11,21 +11,27 @@ export default function ShareProjectModal({
   projectId,
   ownerId,
   projectTitle,
+  ownerName,
   sharedWith = [],
+  sharedPermissions = [],
   onSharedWithChange,
 }) {
   const [email, setEmail] = useState("");
   const [recipients, setRecipients] = useState(sharedWith);
+  const [permissions, setPermissions] = useState(sharedPermissions);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setRecipients(sharedWith || []);
-  }, [sharedWith, isOpen]);
+    setPermissions(sharedPermissions || []);
+  }, [sharedWith, sharedPermissions, isOpen]);
 
   if (!isOpen) return null;
 
   const projectRef = doc(db, "users", ownerId, "projects", projectId);
+  const accessRef = (recipient) =>
+    doc(db, "shared_projects", recipient, "projects", `${ownerId}_${projectId}`);
 
   const addRecipient = async (event) => {
     event.preventDefault();
@@ -44,10 +50,25 @@ export default function ShareProjectModal({
     setSaving(true);
     setError("");
     try {
-      await updateDoc(projectRef, { shared_with: arrayUnion(normalizedEmail) });
+      const newPermission = { email: normalizedEmail, role: "viewer" };
+      await updateDoc(projectRef, {
+        shared_with: arrayUnion(normalizedEmail),
+        shared_permissions: arrayUnion(newPermission),
+      });
+      const projectSnapshot = await getDoc(projectRef);
+      await setDoc(accessRef(normalizedEmail), {
+        ...projectSnapshot.data(),
+        ownerId,
+        projectId,
+        projectTitle,
+        owner_name: ownerName,
+        role: "viewer",
+      });
       const nextRecipients = [...recipients, normalizedEmail];
+      const nextPermissions = [...permissions, newPermission];
       setRecipients(nextRecipients);
-      onSharedWithChange?.(nextRecipients);
+      setPermissions(nextPermissions);
+      onSharedWithChange?.(nextRecipients, nextPermissions);
       setEmail("");
     } catch (err) {
       console.error("Error sharing project:", err);
@@ -61,13 +82,44 @@ export default function ShareProjectModal({
     setSaving(true);
     setError("");
     try {
-      await updateDoc(projectRef, { shared_with: arrayRemove(recipient) });
+      const permission = permissions.find((item) => item.email === recipient);
+      await updateDoc(projectRef, {
+        shared_with: arrayRemove(recipient),
+        ...(permission && { shared_permissions: arrayRemove(permission) }),
+      });
+      await deleteDoc(accessRef(recipient));
       const nextRecipients = recipients.filter((item) => item !== recipient);
+      const nextPermissions = permissions.filter((item) => item.email !== recipient);
       setRecipients(nextRecipients);
-      onSharedWithChange?.(nextRecipients);
+      setPermissions(nextPermissions);
+      onSharedWithChange?.(nextRecipients, nextPermissions);
     } catch (err) {
       console.error("Error removing project share:", err);
       setError("Unable to remove this email right now.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updateRole = async (recipient, role) => {
+    const nextPermission = { email: recipient, role };
+
+    setSaving(true);
+    setError("");
+    try {
+      const nextPermissions = [
+        ...permissions.filter((item) => item.email !== recipient),
+        nextPermission,
+      ];
+      await updateDoc(projectRef, {
+        shared_permissions: nextPermissions,
+      });
+      await updateDoc(accessRef(recipient), { role });
+      setPermissions(nextPermissions);
+      onSharedWithChange?.(recipients, nextPermissions);
+    } catch (err) {
+      console.error("Error updating project permission:", err);
+      setError("Unable to update this permission right now.");
     } finally {
       setSaving(false);
     }
@@ -134,9 +186,19 @@ export default function ShareProjectModal({
                 {recipients.map((recipient) => (
                   <li
                     key={recipient}
-                    className="flex min-w-0 items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2"
+                    className="flex min-w-0 items-center gap-3 rounded-lg bg-slate-50 px-3 py-2"
                   >
-                    <span className="min-w-0 break-words text-sm text-slate-700">{recipient}</span>
+                    <span className="min-w-0 flex-1 break-words text-sm text-slate-700">{recipient}</span>
+                    <select
+                      aria-label={`Permission for ${recipient}`}
+                      value={permissions.find((item) => item.email === recipient)?.role || "viewer"}
+                      onChange={(event) => updateRole(recipient, event.target.value)}
+                      disabled={saving}
+                      className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700"
+                    >
+                      <option value="viewer">Viewer</option>
+                      <option value="editor">Editor</option>
+                    </select>
                     <button
                       type="button"
                       onClick={() => removeRecipient(recipient)}

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { Link, useNavigate } from "react-router-dom";
-import { collection, collectionGroup, query, where, orderBy, onSnapshot, updateDoc, deleteDoc, doc, getDoc } from "firebase/firestore";
+import { collection, query, orderBy, onSnapshot, updateDoc, deleteDoc, doc, getDoc, setDoc } from "firebase/firestore";
 import { deleteObject, ref } from "firebase/storage";
 import { FileText, LogOut, Plus, UserCircle } from "lucide-react";
 import { auth, db, storage } from "../services/firebase";
@@ -35,6 +35,7 @@ export default function DashboardPage() {
   const [currentUserId, setCurrentUserId] = useState(null);
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [sharedProjectsError, setSharedProjectsError] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [showAccountMenu, setShowAccountMenu] = useState(false);
   
@@ -66,9 +67,12 @@ export default function DashboardPage() {
         unsubscribeOwned();
         unsubscribeShared();
         setProjects([]);
+        setSharedProjectsError("");
         setLoading(false);
         return;
       }
+
+      setSharedProjectsError("");
 
       const projectLists = { owned: [], shared: [] };
       const updateProjects = () => {
@@ -85,8 +89,7 @@ export default function DashboardPage() {
         orderBy("created_at", "desc")
       );
       const sharedQuery = query(
-        collectionGroup(db, "projects"),
-        where("shared_with", "array-contains", (user.email || "").toLowerCase())
+        collection(db, "shared_projects", (user.email || "").toLowerCase(), "projects")
       );
 
       unsubscribeOwned = onSnapshot(
@@ -96,8 +99,29 @@ export default function DashboardPage() {
             id: projectDoc.id,
             ownerId: user.uid,
             isOwned: true,
+            owner_name: projectDoc.data().owner_name || username,
             ...projectDoc.data(),
           }));
+          snapshot.docs.forEach((projectDoc) => {
+            const project = projectDoc.data();
+            (project.shared_with || []).forEach((recipient) => {
+              const permission = (project.shared_permissions || []).find(
+                (item) => item.email === recipient
+              );
+              setDoc(
+                doc(db, "shared_projects", recipient, "projects", `${user.uid}_${projectDoc.id}`),
+                {
+                  ...project,
+                  ownerId: user.uid,
+                  projectId: projectDoc.id,
+                  projectTitle: project.project_title || "",
+                  owner_name: project.owner_name || username,
+                  role: permission?.role || "viewer",
+                },
+                { merge: true }
+              ).catch((error) => console.error("Error indexing shared project:", error));
+            });
+          });
           updateProjects();
         },
         (error) => {
@@ -109,33 +133,43 @@ export default function DashboardPage() {
       unsubscribeShared = onSnapshot(
         sharedQuery,
         async (snapshot) => {
-          projectLists.shared = await Promise.all(snapshot.docs.map(async (projectDoc) => {
-            const ownerId = projectDoc.ref.parent.parent.id;
-            const project = projectDoc.data();
-            let ownerName = project.owner_name;
+          setSharedProjectsError("");
+          projectLists.shared = await Promise.all(snapshot.docs.map(async (accessDoc) => {
+            const access = accessDoc.data();
+            const ownerId = access.ownerId;
+            let project = access;
 
-            if (!ownerName) {
-              try {
-                const ownerSnapshot = await getDoc(doc(db, "users", ownerId));
-                ownerName = ownerSnapshot.data()?.firstName || "owner";
-              } catch (error) {
-                console.error("Error fetching shared project owner:", error);
-                ownerName = "owner";
+            if (!project.project_title) {
+              const projectSnapshot = await getDoc(
+                doc(db, "users", ownerId, "projects", access.projectId)
+              );
+              if (projectSnapshot.exists()) {
+                project = { ...project, ...projectSnapshot.data() };
               }
             }
 
+            let ownerName = project.owner_name;
+            if (!ownerName) {
+              ownerName = "owner";
+            }
+
             return {
-              id: projectDoc.id,
+              id: access.projectId,
               ownerId,
               isOwned: ownerId === user.uid,
               owner_name: ownerName,
               ...project,
             };
           }));
+          projectLists.shared = projectLists.shared.filter(Boolean);
           updateProjects();
         },
         (error) => {
           console.error("Error fetching shared projects:", error);
+          setSharedProjectsError(
+            `Could not load shared projects (${error.code || "unknown"}): ${error.message} ` +
+            `App project: ${db.app.options.projectId}; account: ${user.email || "no email claim"}.`
+          );
           setLoading(false);
         }
       );
@@ -323,6 +357,12 @@ export default function DashboardPage() {
               ))}
             </div>
 
+            {sharedProjectsError && (
+              <p role="alert" className="text-sm text-red-600">
+                {sharedProjectsError}
+              </p>
+            )}
+
             {loading ? (
               <div className="text-center py-12">
                 <p className="text-slate-600">Loading your projects...</p>
@@ -465,9 +505,15 @@ export default function DashboardPage() {
           projectId={selectedProject?.id}
           ownerId={auth.currentUser?.uid}
           projectTitle={selectedProject?.project_title || ""}
+          ownerName={selectedProject?.owner_name || username}
           sharedWith={selectedProject?.shared_with || []}
-          onSharedWithChange={(sharedWith) =>
-            setSelectedProject((project) => (project ? { ...project, shared_with: sharedWith } : project))
+          sharedPermissions={selectedProject?.shared_permissions || []}
+          onSharedWithChange={(sharedWith, sharedPermissions) =>
+            setSelectedProject((project) => (project ? {
+              ...project,
+              shared_with: sharedWith,
+              shared_permissions: sharedPermissions,
+            } : project))
           }
         />
       </div>
