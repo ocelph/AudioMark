@@ -6,6 +6,7 @@ import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
 import Spectrogram from "wavesurfer.js/dist/plugins/spectrogram.js";
 import { Download, History, Share2, Maximize2, Search, Plus, X, Pencil, Trash2, ZoomIn, ZoomOut } from "lucide-react";
+import MiscellaneousLabelModal from "../components/MiscellaneousLabelModal";
 
 // Built-in annotation class choices.
 // User-level custom labels are created and selected through the Custom Label modal.
@@ -211,6 +212,8 @@ export default function AnnotationPage() {
   const [customLabels, setCustomLabels] = useState([]);
   const [selectedCustomLabelId, setSelectedCustomLabelId] = useState("");
   const [showCustomLabelModal, setShowCustomLabelModal] = useState(false);
+  const [showMiscellaneousModal, setShowMiscellaneousModal] = useState(false);
+  const [selectedMiscellaneousLabel, setSelectedMiscellaneousLabel] = useState(null);
   const [customLabelModalMode, setCustomLabelModalMode] = useState("create");
   const [customLabelSearch, setCustomLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
@@ -642,10 +645,20 @@ export default function AnnotationPage() {
           type: "custom",
         }
         : null
-      : {
-        ...DEFAULT_CLASSES.find((item) => item.name === selectedClassType),
-        type: "default",
-      };
+      : selectedClassType === "Miscellaneous"
+        ? selectedMiscellaneousLabel
+          ? {
+            name: selectedMiscellaneousLabel.name,
+            color: "#f97316",
+            type: "miscellaneous",
+            source: "audioset",
+            sourceId: selectedMiscellaneousLabel.id,
+          }
+          : null
+        : {
+          ...DEFAULT_CLASSES.find((item) => item.name === selectedClassType),
+          type: "default",
+        };
 
   const normalizedClassSearch = classSearch.trim().toLowerCase();
   const filteredDefaultClasses = DEFAULT_CLASSES.filter((annotationClass) =>
@@ -678,11 +691,19 @@ export default function AnnotationPage() {
 
     if (className === "Custom Label") {
       setSelectedClassType("Custom Label");
+      setSelectedMiscellaneousLabel(null);
       openCustomLabelModal("create");
       return;
     }
 
+    if (className === "Miscellaneous") {
+      setShowMiscellaneousModal(true);
+      return;
+    }
+
     setSelectedClassType(className);
+    setSelectedCustomLabelId("");
+    setSelectedMiscellaneousLabel(null);
   };
 
   const handleSelectCustomLabel = (label) => {
@@ -707,6 +728,14 @@ export default function AnnotationPage() {
     setCustomLabelSearch("");
     setNewLabelName("");
     setCustomLabelError("");
+  };
+
+  const handleSelectMiscellaneousLabel = (sound) => {
+    setSelectedClassType("Miscellaneous");
+    setSelectedMiscellaneousLabel(sound);
+    setSelectedCustomLabelId("");
+    setShowMiscellaneousModal(false);
+    setCreateErrors((prev) => ({ ...prev, label: undefined }));
   };
 
   const handleCreateCustomLabel = async () => {
@@ -795,6 +824,10 @@ export default function AnnotationPage() {
 
     if (selectedClassType === "Custom Label" && !selectedCustomLabel) {
       errors.label = "Select or create a custom label.";
+    }
+
+    if (selectedClassType === "Miscellaneous" && !selectedMiscellaneousLabel) {
+      errors.label = "Select a predefined sound label.";
     }
 
     if (duration > 0) {
@@ -1122,6 +1155,10 @@ export default function AnnotationPage() {
                 annotationClass.name === "Custom Label" && selectedCustomLabel
                   ? selectedCustomLabel.name
                   : null;
+              const miscellaneousSummary =
+                annotationClass.name === "Miscellaneous" && selectedMiscellaneousLabel
+                  ? selectedMiscellaneousLabel.name
+                  : null;
 
               return (
                 <button
@@ -1146,9 +1183,9 @@ export default function AnnotationPage() {
                     <span>{annotationClass.name}</span>
                   </span>
 
-                  {customSummary && (
+                  {(customSummary || miscellaneousSummary) && (
                     <span className="max-w-[120px] truncate text-xs text-indigo-500">
-                      {customSummary}
+                      {customSummary || miscellaneousSummary}
                     </span>
                   )}
                 </button>
@@ -1195,6 +1232,7 @@ export default function AnnotationPage() {
             type="button"
             onClick={() => {
               setSelectedClassType("Custom Label");
+              setSelectedMiscellaneousLabel(null);
               openCustomLabelModal("create");
             }}
             className="mb-3 flex w-full items-center justify-between gap-2 rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-sm text-slate-500 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600"
@@ -1231,6 +1269,34 @@ export default function AnnotationPage() {
                 <button
                   type="button"
                   onClick={() => openCustomLabelModal("create")}
+                  className="flex-shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
+                >
+                  Change
+                </button>
+              </div>
+            </div>
+          )}
+
+          {selectedClassType === "Miscellaneous" && selectedMiscellaneousLabel && (
+            <div
+              className={`mb-4 rounded-lg border px-3 py-2 ${createErrors.label ? "border-red-300 bg-red-50" : "border-slate-200 bg-slate-50"
+                }`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                    Selected predefined sound
+                  </p>
+                  <div className="mt-1 flex items-center gap-2">
+                    <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full bg-orange-500" />
+                    <span className="truncate text-sm font-medium text-slate-700">
+                      {selectedMiscellaneousLabel.name}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowMiscellaneousModal(true)}
                   className="flex-shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
                 >
                   Change
@@ -1635,6 +1701,13 @@ export default function AnnotationPage() {
       </div>
 
       {/* Custom label selection / creation modal */}
+      {showMiscellaneousModal && (
+        <MiscellaneousLabelModal
+          onSelect={handleSelectMiscellaneousLabel}
+          onClose={() => setShowMiscellaneousModal(false)}
+        />
+      )}
+
       {showCustomLabelModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/20 px-4 backdrop-blur-sm">
           <div
