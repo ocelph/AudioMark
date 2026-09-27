@@ -201,6 +201,7 @@ export default function AnnotationPage() {
   const regionsRef = useRef(null);
   const activeRegionRef = useRef(null);
   const syncingRegionRef = useRef(false);
+  const editingRegionRef = useRef(false);
 
   // Annotation class selection.
   // Default and Miscellaneous are built-in classes.
@@ -385,7 +386,7 @@ export default function AnnotationPage() {
       }
     });
 
-    const syncCreateFormFromRegion = (region) => {
+    const syncFormFromRegion = (region) => {
       if (!region || syncingRegionRef.current) return;
 
       activeRegionRef.current = region;
@@ -393,10 +394,17 @@ export default function AnnotationPage() {
       const start = Number(region.start.toFixed(3));
       const end = Number(region.end.toFixed(3));
 
-      setCreateStart(start);
-      setCreateEnd(end);
       setActiveSelection({ start, end });
-      setCreateErrors({});
+
+      if (editingRegionRef.current) {
+        setEditStart(start);
+        setEditEnd(end);
+        setEditErrors((prev) => ({ ...prev, start: undefined, end: undefined }));
+      } else {
+        setCreateStart(start);
+        setCreateEnd(end);
+        setCreateErrors((prev) => ({ ...prev, start: undefined, end: undefined }));
+      }
     };
 
     const unsubRegionCreated = regions.on("region-created", (region) => {
@@ -407,16 +415,16 @@ export default function AnnotationPage() {
         previous.remove();
       }
 
-      syncCreateFormFromRegion(region);
+      syncFormFromRegion(region);
     });
 
     const unsubRegionClicked = regions.on("region-clicked", (region, event) => {
       event?.stopPropagation?.();
-      syncCreateFormFromRegion(region);
+      syncFormFromRegion(region);
     });
 
     const unsubRegionUpdated = regions.on("region-updated", (region) => {
-      syncCreateFormFromRegion(region);
+      syncFormFromRegion(region);
     });
 
     const unsubPlay = ws.on("play", () => setIsPlaying(true));
@@ -826,6 +834,51 @@ export default function AnnotationPage() {
     }
   };
 
+  const handleEditStartChange = (nextStart) => {
+    const start = clampToDuration(nextStart);
+    setEditStart(start);
+    setEditErrors((prev) => ({ ...prev, start: undefined }));
+    updateActiveRegionFromTimestamps(start, editEnd);
+  };
+
+  const handleEditEndChange = (nextEnd) => {
+    const end = clampToDuration(nextEnd);
+    setEditEnd(end);
+    setEditErrors((prev) => ({ ...prev, end: undefined }));
+    updateActiveRegionFromTimestamps(editStart, end);
+  };
+
+  const showEditAnnotationRegion = (annotation) => {
+    const regions = regionsRef.current;
+    const ws = wavesurferRef.current;
+    if (!regions || !ws || !audioReady || !annotation) return;
+
+    const start = clampToDuration(annotation.startTime);
+    const end = clampToDuration(annotation.endTime);
+    if (end <= start) return;
+
+    activeRegionRef.current?.remove();
+    syncingRegionRef.current = true;
+    editingRegionRef.current = true;
+
+    const region = regions.addRegion({
+      start,
+      end,
+      color: "rgba(99, 102, 241, 0.25)",
+      drag: true,
+      resize: true,
+    });
+
+    activeRegionRef.current = region;
+    setActiveSelection({
+      start: Number(start.toFixed(3)),
+      end: Number(end.toFixed(3)),
+    });
+
+    syncingRegionRef.current = false;
+    ws.setTime(start);
+  };
+
   const handleEditOpen = (annotation) => {
     setSelectedAnnotation(annotation);
     setEditLabel(annotation.label);
@@ -841,7 +894,9 @@ export default function AnnotationPage() {
     setEditComment(annotation.comment || "");
     setEditErrors({});
     setEditWarning("");
+    editingRegionRef.current = true;
     setIsEditing(true);
+    showEditAnnotationRegion(annotation);
   };
 
   const handleEditLabelChange = (value) => {
@@ -905,6 +960,11 @@ export default function AnnotationPage() {
         endTime: end,
         comment: editComment.trim(),
       });
+      activeRegionRef.current?.remove();
+      activeRegionRef.current = null;
+      editingRegionRef.current = false;
+      setActiveSelection(null);
+
       setSelectedAnnotation(null);
       setIsEditing(false);
       setEditErrors({});
@@ -914,7 +974,15 @@ export default function AnnotationPage() {
     }
   };
 
+  const clearEditRegion = () => {
+    activeRegionRef.current?.remove();
+    activeRegionRef.current = null;
+    editingRegionRef.current = false;
+    setActiveSelection(null);
+  };
+
   const handleCancelEdit = () => {
+    clearEditRegion();
     setSelectedAnnotation(null);
     setIsEditing(false);
     setEditErrors({});
@@ -922,6 +990,7 @@ export default function AnnotationPage() {
   };
 
   const handleClosePanel = () => {
+    clearEditRegion();
     setSelectedAnnotation(null);
     setIsEditing(false);
     setEditErrors({});
@@ -1461,7 +1530,7 @@ export default function AnnotationPage() {
                 <TimestampInput
                   label="Start Time"
                   value={editStart}
-                  onChange={setEditStart}
+                  onChange={handleEditStartChange}
                   hasError={Boolean(editErrors.start)}
                 />
                 {editErrors.start && <p className="text-xs text-red-500">{editErrors.start}</p>}
@@ -1469,7 +1538,7 @@ export default function AnnotationPage() {
                 <TimestampInput
                   label="End Time"
                   value={editEnd}
-                  onChange={setEditEnd}
+                  onChange={handleEditEndChange}
                   hasError={Boolean(editErrors.end)}
                 />
                 {editErrors.end && <p className="text-xs text-red-500">{editErrors.end}</p>}
