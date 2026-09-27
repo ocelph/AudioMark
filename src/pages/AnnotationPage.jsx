@@ -8,7 +8,7 @@ import Spectrogram from "wavesurfer.js/dist/plugins/spectrogram.js";
 import { Download, History, Share2, Maximize2, Search, Plus, X, Pencil, Trash2, ZoomIn, ZoomOut } from "lucide-react";
 
 // Built-in annotation class choices.
-// Project-level custom labels are created and selected through the Custom Label modal.
+// User-level custom labels are created and selected through the Custom Label modal.
 const DEFAULT_CLASSES = [
   { name: "Default Label", color: "#22c55e" },
   { name: "Custom Label", color: "#3b82f6" },
@@ -205,7 +205,7 @@ export default function AnnotationPage() {
 
   // Annotation class selection.
   // Default and Miscellaneous are built-in classes.
-  // Custom labels are stored per project in Firestore and selected through a modal.
+  // Custom labels are stored per user in Firestore and selected through a modal.
   const [selectedClassType, setSelectedClassType] = useState("Default Label");
   const [classSearch, setClassSearch] = useState("");
   const [customLabels, setCustomLabels] = useState([]);
@@ -270,11 +270,11 @@ export default function AnnotationPage() {
     return () => unsubscribe();
   }, [uid, projectId]);
 
-  // Load project-level custom labels in real time.
+  // Load user-level custom labels in real time.
   useEffect(() => {
     if (!uid) return;
 
-    const labelsRef = collection(db, "users", uid, "projects", projectId, "labels");
+    const labelsRef = collection(db, "users", uid, "labels");
     const unsubscribe = onSnapshot(
       labelsRef,
       (snapshot) => {
@@ -291,7 +291,7 @@ export default function AnnotationPage() {
     );
 
     return () => unsubscribe();
-  }, [uid, projectId]);
+  }, [uid]);
 
   // Initialise one shared WaveSurfer instance for both visualisations.
   // The spectrogram uses the same audio/timeline. 
@@ -738,7 +738,7 @@ export default function AnnotationPage() {
 
     try {
       const color = PALETTE[customLabels.length % PALETTE.length];
-      const labelsRef = collection(db, "users", uid, "projects", projectId, "labels");
+      const labelsRef = collection(db, "users", uid, "labels");
 
       const docRef = await addDoc(labelsRef, {
         name: trimmed,
@@ -1653,7 +1653,7 @@ export default function AnnotationPage() {
                 <p className="mt-1 text-sm text-slate-500">
                   {customLabelModalMode === "edit"
                     ? "Select an existing custom label or create a new one for this annotation."
-                    : "Search existing project labels or create a new one."}
+                    : "Search your existing labels or create a new one."}
                 </p>
               </div>
               <button
@@ -1774,7 +1774,7 @@ export default function AnnotationPage() {
                 <p className="mt-1 text-xs text-red-500">{customLabelError}</p>
               )}
               <p className="mt-2 text-xs text-slate-400">
-                Custom labels are saved to this project and can be reused for future annotations.
+                Custom labels are saved to your account and can be reused across your projects.
               </p>
             </div>
           </div>
