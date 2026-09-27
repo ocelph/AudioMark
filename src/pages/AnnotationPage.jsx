@@ -209,10 +209,12 @@ export default function AnnotationPage() {
   // Custom labels are stored per user in Firestore and selected through a modal.
   const [selectedClassType, setSelectedClassType] = useState("Default Label");
   const [classSearch, setClassSearch] = useState("");
+  const [editClassSearch, setEditClassSearch] = useState("");
   const [customLabels, setCustomLabels] = useState([]);
   const [selectedCustomLabelId, setSelectedCustomLabelId] = useState("");
   const [showCustomLabelModal, setShowCustomLabelModal] = useState(false);
   const [showMiscellaneousModal, setShowMiscellaneousModal] = useState(false);
+  const [miscellaneousModalMode, setMiscellaneousModalMode] = useState("create");
   const [selectedMiscellaneousLabel, setSelectedMiscellaneousLabel] = useState(null);
   const [customLabelModalMode, setCustomLabelModalMode] = useState("create");
   const [customLabelSearch, setCustomLabelSearch] = useState("");
@@ -697,6 +699,7 @@ export default function AnnotationPage() {
     }
 
     if (className === "Miscellaneous") {
+      setMiscellaneousModalMode("create");
       setShowMiscellaneousModal(true);
       return;
     }
@@ -731,11 +734,26 @@ export default function AnnotationPage() {
   };
 
   const handleSelectMiscellaneousLabel = (sound) => {
-    setSelectedClassType("Miscellaneous");
-    setSelectedMiscellaneousLabel(sound);
-    setSelectedCustomLabelId("");
+    const annotationClass = {
+      name: sound.name,
+      color: "#f97316",
+      type: "miscellaneous",
+      source: "audioset",
+      sourceId: sound.id,
+    };
+
+    if (miscellaneousModalMode === "edit") {
+      setEditLabel(sound.name);
+      setEditAnnotationClass(annotationClass);
+      setEditErrors((prev) => ({ ...prev, label: undefined }));
+    } else {
+      setSelectedClassType("Miscellaneous");
+      setSelectedMiscellaneousLabel(sound);
+      setSelectedCustomLabelId("");
+      setCreateErrors((prev) => ({ ...prev, label: undefined }));
+    }
+
     setShowMiscellaneousModal(false);
-    setCreateErrors((prev) => ({ ...prev, label: undefined }));
   };
 
   const handleCreateCustomLabel = async () => {
@@ -927,42 +945,49 @@ export default function AnnotationPage() {
     setEditComment(annotation.comment || "");
     setEditErrors({});
     setEditWarning("");
+    setEditClassSearch("");
     editingRegionRef.current = true;
     setIsEditing(true);
     showEditAnnotationRegion(annotation);
   };
 
-  const handleEditLabelChange = (value) => {
-    if (value === "__custom__") {
+  const handleEditSelectClassType = (className) => {
+    setEditErrors((prev) => ({ ...prev, label: undefined }));
+
+    if (className === "Custom Label") {
       openCustomLabelModal("edit");
       return;
     }
 
+    if (className === "Miscellaneous") {
+      setMiscellaneousModalMode("edit");
+      setShowMiscellaneousModal(true);
+      return;
+    }
+
     const builtInClass = DEFAULT_CLASSES.find(
-      (annotationClass) => annotationClass.name === value
+      (annotationClass) => annotationClass.name === className
     );
 
-    if (builtInClass && builtInClass.name !== "Custom Label") {
+    if (builtInClass) {
       setEditLabel(builtInClass.name);
       setEditAnnotationClass({
         ...builtInClass,
         type: "default",
       });
-      setEditErrors((prev) => ({ ...prev, label: undefined }));
-      return;
     }
+  };
 
-    const customLabel = customLabels.find((label) => label.id === value);
-    if (customLabel) {
-      setEditLabel(customLabel.name);
-      setEditAnnotationClass({
-        id: customLabel.id,
-        name: customLabel.name,
-        color: customLabel.color || "#3b82f6",
-        type: "custom",
-      });
-      setEditErrors((prev) => ({ ...prev, label: undefined }));
-    }
+  const handleEditSelectCustomLabel = (label) => {
+    setEditLabel(label.name);
+    setEditAnnotationClass({
+      id: label.id,
+      name: label.name,
+      color: label.color || "#3b82f6",
+      type: "custom",
+    });
+    setEditErrors((prev) => ({ ...prev, label: undefined }));
+    setEditClassSearch("");
   };
 
   // Now persists to Firestore, then updates what's shown in the panel.
@@ -1053,6 +1078,16 @@ export default function AnnotationPage() {
     setShowDeleteConfirm(false);
     setAnnotationToDelete(null);
   };
+
+  const normalizedEditClassSearch = editClassSearch.trim().toLowerCase();
+  const filteredEditDefaultClasses = DEFAULT_CLASSES.filter((annotationClass) =>
+    annotationClass.name.toLowerCase().includes(normalizedEditClassSearch)
+  );
+  const filteredEditCustomLabels = normalizedEditClassSearch
+    ? customLabels.filter((label) =>
+      (label.name || "").toLowerCase().includes(normalizedEditClassSearch)
+    )
+    : [];
 
   if (loading) return (
     <div className="flex h-screen items-center justify-center bg-slate-50">
@@ -1296,7 +1331,7 @@ export default function AnnotationPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => setShowMiscellaneousModal(true)}
+                  onClick={() => { setMiscellaneousModalMode("create"); setShowMiscellaneousModal(true); }}
                   className="flex-shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
                 >
                   Change
@@ -1610,53 +1645,184 @@ export default function AnnotationPage() {
                 {editErrors.end && <p className="text-xs text-red-500">{editErrors.end}</p>}
 
                 <div>
-                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">
-                    Label *
+                  <label className="mb-2 block text-sm font-semibold text-slate-700">
+                    Annotation Class
                   </label>
 
-                  <select
-                    value={
-                      editAnnotationClass?.type === "custom"
-                        ? editAnnotationClass.id
-                        : editLabel
-                    }
-                    onChange={(e) => handleEditLabelChange(e.target.value)}
-                    className={`w-full rounded-lg border bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 ${editErrors.label ? "border-red-400" : "border-slate-200"
-                      }`}
+                  <div className="mb-2 flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5 focus-within:ring-2 focus-within:ring-indigo-200">
+                    <Search className="h-4 w-4 flex-shrink-0 text-slate-400" />
+                    <input
+                      value={editClassSearch}
+                      onChange={(e) => setEditClassSearch(e.target.value)}
+                      placeholder="Search or select label"
+                      className="w-full text-sm outline-none"
+                    />
+                    {editClassSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setEditClassSearch("")}
+                        className="rounded p-0.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                        aria-label="Clear edit label search"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="mb-2 flex flex-col gap-1">
+                    {filteredEditDefaultClasses.map((annotationClass) => {
+                      const isCustom = editAnnotationClass?.type === "custom";
+                      const isMisc = editAnnotationClass?.type === "miscellaneous";
+                      const isSelected =
+                        annotationClass.name === "Custom Label"
+                          ? isCustom
+                          : annotationClass.name === "Miscellaneous"
+                            ? isMisc
+                            : !isCustom && !isMisc && editLabel === annotationClass.name;
+
+                      const summary =
+                        annotationClass.name === "Custom Label" && isCustom
+                          ? editLabel
+                          : annotationClass.name === "Miscellaneous" && isMisc
+                            ? editLabel
+                            : null;
+
+                      return (
+                        <button
+                          key={annotationClass.name}
+                          type="button"
+                          onClick={() => handleEditSelectClassType(annotationClass.name)}
+                          className={`flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm transition ${isSelected
+                              ? "bg-indigo-50 text-indigo-700"
+                              : "text-slate-700 hover:bg-slate-50"
+                            }`}
+                        >
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span
+                              className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                              style={{
+                                backgroundColor:
+                                  annotationClass.name === "Custom Label" && isCustom
+                                    ? editAnnotationClass?.color || annotationClass.color
+                                    : annotationClass.color,
+                              }}
+                            />
+                            <span>{annotationClass.name}</span>
+                          </span>
+                          {summary && (
+                            <span className="max-w-[120px] truncate text-xs text-indigo-500">
+                              {summary}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+
+                    {filteredEditCustomLabels.map((label) => {
+                      const isSelected =
+                        editAnnotationClass?.type === "custom" &&
+                        editAnnotationClass?.id === label.id;
+
+                      return (
+                        <button
+                          key={label.id}
+                          type="button"
+                          onClick={() => handleEditSelectCustomLabel(label)}
+                          className={`flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm transition ${isSelected
+                              ? "bg-indigo-50 text-indigo-700"
+                              : "text-slate-700 hover:bg-slate-50"
+                            }`}
+                        >
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span
+                              className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                              style={{ backgroundColor: label.color || "#3b82f6" }}
+                            />
+                            <span className="truncate">{label.name}</span>
+                          </span>
+                          <span className="text-[10px] uppercase tracking-wide text-slate-400">
+                            Custom
+                          </span>
+                        </button>
+                      );
+                    })}
+
+                    {normalizedEditClassSearch &&
+                      filteredEditDefaultClasses.length === 0 &&
+                      filteredEditCustomLabels.length === 0 && (
+                        <p className="px-2 py-2 text-xs text-slate-400">No matching labels.</p>
+                      )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => openCustomLabelModal("edit")}
+                    className="mb-3 flex w-full items-center justify-between gap-2 rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-sm text-slate-500 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600"
                   >
-                    <option value="Default Label">Default Label</option>
+                    <span className="flex items-center gap-2">
+                      <Plus className="h-4 w-4" />
+                      Create New Label
+                    </span>
+                    <span className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white">
+                      <Plus className="h-4 w-4" />
+                    </span>
+                  </button>
 
-                    {customLabels.map((label) => (
-                      <option key={label.id} value={label.id}>
-                        {label.name}
-                      </option>
-                    ))}
-
-                    <option value="Miscellaneous">Miscellaneous</option>
-                    <option value="__custom__">+ Create New Label…</option>
-                  </select>
-
-                  {editAnnotationClass && (
-                    <div className="mt-2 flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-                      <span
-                        className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
-                        style={{
-                          backgroundColor: editAnnotationClass.color || "#94a3b8",
-                        }}
-                      />
-                      <span className="min-w-0 flex-1 truncate text-sm text-slate-600">
-                        {editLabel}
-                      </span>
-
-                      {editAnnotationClass.type === "custom" && (
+                  {editAnnotationClass?.type === "custom" && (
+                    <div className={`mb-3 rounded-lg border px-3 py-2 ${editErrors.label ? "border-red-300 bg-red-50" : "border-slate-200 bg-slate-50"
+                      }`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                            Selected custom label
+                          </p>
+                          <div className="mt-1 flex items-center gap-2">
+                            <span
+                              className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                              style={{ backgroundColor: editAnnotationClass.color || "#3b82f6" }}
+                            />
+                            <span className="truncate text-sm font-medium text-slate-700">
+                              {editLabel}
+                            </span>
+                          </div>
+                        </div>
                         <button
                           type="button"
                           onClick={() => openCustomLabelModal("edit")}
-                          className="flex-shrink-0 text-xs font-medium text-indigo-600 hover:text-indigo-700"
+                          className="flex-shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
                         >
                           Change
                         </button>
-                      )}
+                      </div>
+                    </div>
+                  )}
+
+                  {editAnnotationClass?.type === "miscellaneous" && (
+                    <div className={`mb-3 rounded-lg border px-3 py-2 ${editErrors.label ? "border-red-300 bg-red-50" : "border-slate-200 bg-slate-50"
+                      }`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                            Selected predefined sound
+                          </p>
+                          <div className="mt-1 flex items-center gap-2">
+                            <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full bg-orange-500" />
+                            <span className="truncate text-sm font-medium text-slate-700">
+                              {editLabel}
+                            </span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMiscellaneousModalMode("edit");
+                            setShowMiscellaneousModal(true);
+                          }}
+                          className="flex-shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
+                        >
+                          Change
+                        </button>
+                      </div>
                     </div>
                   )}
 
