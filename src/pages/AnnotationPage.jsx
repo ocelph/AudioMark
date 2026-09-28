@@ -960,7 +960,9 @@ export default function AnnotationPage() {
       if (!isMountedRef.current) return;
       const data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
       setAnnotations(data);
-    });
+    },
+      (error) => { console.error("Failed to synchronise annotations:", error); }
+    );
     return () => unsubscribe();
   }, [ownerId, projectId]);
 
