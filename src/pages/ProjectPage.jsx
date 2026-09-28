@@ -4,7 +4,7 @@ import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "../services/firebase";
 
 export default function ProjectPage() {
-    const { projectId } = useParams();
+    const { ownerId, projectId } = useParams();
     const navigate = useNavigate();
     const [project, setProject] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -24,7 +24,7 @@ export default function ProjectPage() {
                     return;
                 }
 
-                const projectRef = doc(db, "users", user.uid, "projects", projectId);
+                const projectRef = doc(db, "users", ownerId, "projects", projectId);
                 const projectSnap = await getDoc(projectRef);
 
                 if (projectSnap.exists()) {
@@ -42,7 +42,7 @@ export default function ProjectPage() {
         };
 
         fetchProject();
-    }, [projectId, navigate]);
+    }, [ownerId, projectId, navigate]);
 
     const handlePlay = () => {
         audioRef.current?.play();

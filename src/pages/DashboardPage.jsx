@@ -237,7 +237,7 @@ export default function DashboardPage() {
               visibleDocuments.map((document) => (
                 <Link
                   key={document.id}
-                  to={`/project/${document.id}/annotation`}
+                  to={`/project/${auth.currentUser.uid}/${document.id}/annotation`}
                   className="rounded-[26px] border border-slate-200 bg-white/90 p-4 shadow-[0_14px_30px_rgba(15,23,42,0.06)] transition hover:-translate-y-0.5 hover:shadow-[0_18px_35px_rgba(15,23,42,0.08)] sm:p-5 block"
                 >
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">

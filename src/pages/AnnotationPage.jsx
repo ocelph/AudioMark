@@ -777,10 +777,10 @@ const verifyAllAnnotationsExport = (content, format, expectedCount) => {
 
 
 export default function AnnotationPage() {
-  const { projectId } = useParams();
+  const { ownerId, projectId } = useParams();
   const navigate = useNavigate();
 
-  const [uid, setUid] = useState(null);
+  const [currentUserId, setCurrentUserId] = useState(null);
   const [userInitials, setUserInitials] = useState("U");
   const [audioUrl, setAudioUrl] = useState(null);
   const [fileName, setFileName] = useState("");
@@ -910,13 +910,13 @@ export default function AnnotationPage() {
           navigate("/login");
           return;
         }
-        const projectSnap = await getDoc(doc(db, "users", user.uid, "projects", projectId));
+        const projectSnap = await getDoc(doc(db, "users", ownerId, "projects", projectId));
         if (!isMountedRef.current) return;
         if (projectSnap.exists()) {
           const data = projectSnap.data();
           setFileName(data.project_title);
           setAudioUrl(data.download_url);
-          setUid(user.uid);
+          setCurrentUserId(user.uid);
           setUserInitials(getInitials(user.displayName || user.email));
         } else {
           setError("Project not found.");
@@ -929,13 +929,13 @@ export default function AnnotationPage() {
       }
     };
     loadProject();
-  }, [projectId, navigate]);
+  }, [ownerId, projectId, navigate]);
 
-  // Load annotations in real time (only once we know the uid)
+  // Load project annotations in real time from the project owner path.
   useEffect(() => {
-    if (!uid) return;
+    if (!ownerId) return;
     const q = query(
-      collection(db, "users", uid, "projects", projectId, "annotations"),
+      collection(db, "users", ownerId, "projects", projectId, "annotations"),
       orderBy("createdAt", "asc")
     );
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -944,13 +944,13 @@ export default function AnnotationPage() {
       setAnnotations(data);
     });
     return () => unsubscribe();
-  }, [uid, projectId]);
+  }, [ownerId, projectId]);
 
   // Load user-level custom labels in real time.
   useEffect(() => {
-    if (!uid) return;
+    if (!currentUserId) return;
 
-    const labelsRef = collection(db, "users", uid, "labels");
+    const labelsRef = collection(db, "users", currentUserId, "labels");
     const unsubscribe = onSnapshot(
       labelsRef,
       (snapshot) => {
@@ -967,13 +967,13 @@ export default function AnnotationPage() {
     );
 
     return () => unsubscribe();
-  }, [uid]);
+  }, [currentUserId]);
 
   // Initialise one shared WaveSurfer instance for both visualisations.
   // The spectrogram uses the same audio/timeline. Region overlays, zoom and
   // scrolling are also mirrored so the two panes behave as one linked view.
   useEffect(() => {
-    if (!audioUrl || !waveformRef.current || !spectrogramRef.current || !uid) return;
+    if (!audioUrl || !waveformRef.current || !spectrogramRef.current || !currentUserId) return;
 
     setAudioReady(false);
     setWaveformError("");
@@ -1164,7 +1164,7 @@ export default function AnnotationPage() {
       wavesurferRef.current = null;
       ws.destroy();
     };
-  }, [audioUrl, uid]);
+  }, [audioUrl, currentUserId]);
 
   const handleStopPlayback = () => {
     const ws = wavesurferRef.current;
@@ -1493,7 +1493,7 @@ export default function AnnotationPage() {
   };
 
   const handleCreateCustomLabel = async () => {
-    if (!uid) return;
+    if (!currentUserId) return;
 
     const trimmed = newLabelName.trim();
 
@@ -1521,7 +1521,7 @@ export default function AnnotationPage() {
 
     try {
       const color = PALETTE[customLabels.length % PALETTE.length];
-      const labelsRef = collection(db, "users", uid, "labels");
+      const labelsRef = collection(db, "users", currentUserId, "labels");
 
       const docRef = await addDoc(labelsRef, {
         name: trimmed,
@@ -1566,7 +1566,7 @@ export default function AnnotationPage() {
   };
 
   const handleCreateAnnotation = async () => {
-    if (!uid) return;
+    if (!ownerId || !currentUserId) return;
 
     const start = parseFloat(createStart);
     const end = parseFloat(createEnd);
@@ -1598,7 +1598,7 @@ export default function AnnotationPage() {
     setCreateWarning(overlap ? `Heads up — this overlaps with "${overlap.label}".` : "");
 
     try {
-      await addDoc(collection(db, "users", uid, "projects", projectId, "annotations"), {
+      await addDoc(collection(db, "users", ownerId, "projects", projectId, "annotations"), {
         startTime: start,
         endTime: end,
         label,
@@ -1756,7 +1756,7 @@ export default function AnnotationPage() {
     setEditWarning(overlap ? `Heads up — this overlaps with "${overlap.label}".` : "");
 
     try {
-      await updateDoc(doc(db, "users", uid, "projects", projectId, "annotations", selectedAnnotation.id), {
+      await updateDoc(doc(db, "users", ownerId, "projects", projectId, "annotations", selectedAnnotation.id), {
         label: editLabel.trim(),
         annotationClass:
           editAnnotationClass || {
@@ -1815,7 +1815,7 @@ export default function AnnotationPage() {
 
   const handleConfirmDelete = async () => {
     try {
-      await deleteDoc(doc(db, "users", uid, "projects", projectId, "annotations", annotationToDelete.id));
+      await deleteDoc(doc(db, "users", ownerId, "projects", projectId, "annotations", annotationToDelete.id));
       if (!isMountedRef.current) return;
 
       if (exportSelectedAnnotationId === annotationToDelete.id) {
