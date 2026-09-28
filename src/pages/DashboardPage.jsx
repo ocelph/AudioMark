@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { Link, useNavigate } from "react-router-dom";
-import { collection, query, orderBy, onSnapshot, updateDoc, deleteDoc, doc } from "firebase/firestore";
+import { collection, query, orderBy, onSnapshot, updateDoc, deleteDoc, doc, runTransaction, serverTimestamp } from "firebase/firestore";
 import { deleteObject, ref } from "firebase/storage";
 import { FileText, LogOut, Plus, UserCircle } from "lucide-react";
 import { auth, db, storage } from "../services/firebase";
@@ -9,6 +9,7 @@ import AddProjectModal from "../components/AddProjectModal";
 import ProjectActionsMenu from "../components/ProjectActionsMenu";
 import EditProjectModal from "../components/EditProjectModal";
 import DeleteProjectModal from "../components/DeleteProjectModal";
+import ShareProjectModal from "../components/ShareProjectModal";
 import Logo from '../components/Logo';
 import backgroundImg from "../assets/login_page_background.png";
 
@@ -27,11 +28,12 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [showAccountMenu, setShowAccountMenu] = useState(false);
-  
+
   //Project action modals
   const [selectedProject, setSelectedProject] = useState(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
   useEffect(() => {
@@ -107,6 +109,85 @@ export default function DashboardPage() {
     }
   };
 
+  const handleShare = async ({ email, role }) => {
+    if (!selectedProject || !auth.currentUser) return;
+
+    const ownerId = auth.currentUser.uid;
+    const recipientEmail = email.trim().toLowerCase();
+    const ownerEmail = (auth.currentUser.email || "").trim().toLowerCase();
+
+    if (!recipientEmail) {
+      throw new Error("Enter a collaborator email address.");
+    }
+
+    if (recipientEmail === ownerEmail) {
+      throw new Error("You already own this project.");
+    }
+
+    setActionLoading(true);
+
+    try {
+      const projectRef = doc(db, "users", ownerId, "projects", selectedProject.id);
+      const accessId = `${ownerId}_${selectedProject.id}`;
+      const accessRef = doc(db, "shared_projects", recipientEmail, "projects", accessId);
+
+      await runTransaction(db, async (transaction) => {
+        const projectSnap = await transaction.get(projectRef);
+
+        if (!projectSnap.exists()) {
+          throw new Error("Project not found.");
+        }
+
+        const projectData = projectSnap.data();
+        const sharedWith = Array.isArray(projectData.shared_with)
+          ? projectData.shared_with.map((value) => String(value).toLowerCase())
+          : [];
+        const sharedPermissions = Array.isArray(projectData.shared_permissions)
+          ? projectData.shared_permissions
+          : [];
+
+        const nextSharedWith = sharedWith.includes(recipientEmail)
+          ? sharedWith
+          : [...sharedWith, recipientEmail];
+
+        const nextSharedPermissions = [
+          ...sharedPermissions.filter(
+            (permission) =>
+              String(permission?.email || "").toLowerCase() !== recipientEmail
+          ),
+          { email: recipientEmail, role },
+        ];
+
+        transaction.update(projectRef, {
+          shared_with: nextSharedWith,
+          shared_permissions: nextSharedPermissions,
+          updated_at: new Date().toISOString(),
+        });
+
+        transaction.set(
+          accessRef,
+          {
+            ownerId,
+            projectId: selectedProject.id,
+            role,
+            recipientEmail,
+            projectTitle: projectData.project_title || selectedProject.project_title || "Untitled Project",
+            sharedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      });
+
+      setShowShareModal(false);
+      setSelectedProject(null);
+    } catch (error) {
+      console.error("Error sharing project:", error);
+      throw error;
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!selectedProject) return;
     setActionLoading(true);
@@ -167,7 +248,7 @@ export default function DashboardPage() {
       <div className="mx-auto max-w-[1280px]">
         <header className="relative z-50 mb-6 flex flex-col gap-4 overflow-visible rounded-[28px] border border-slate-200/80 bg-white/75 p-4 shadow-[0_20px_60px_rgba(15,23,42,0.12)] backdrop-blur-xl sm:p-5 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-4">
-              <Logo/>
+            <Logo />
           </div>
 
           <div className="relative self-end lg:self-auto">
@@ -267,8 +348,8 @@ export default function DashboardPage() {
                         <span>
                           {document.last_accessed_at
                             ? new Date(
-                                document.last_accessed_at.toDate?.() || document.last_accessed_at
-                              ).toLocaleDateString()
+                              document.last_accessed_at.toDate?.() || document.last_accessed_at
+                            ).toLocaleDateString()
                             : "Never"}
                         </span>
                       </div>
@@ -290,6 +371,10 @@ export default function DashboardPage() {
                             onEdit={() => {
                               openProjectActions(document);
                               setShowEditModal(true);
+                            }}
+                            onShare={() => {
+                              openProjectActions(document);
+                              setShowShareModal(true);
                             }}
                             onDelete={() => {
                               openProjectActions(document);
@@ -322,6 +407,18 @@ export default function DashboardPage() {
           }}
           project={selectedProject}
           onSave={handleEdit}
+          loading={actionLoading}
+        />
+
+        <ShareProjectModal
+          isOpen={showShareModal}
+          onClose={() => {
+            if (actionLoading) return;
+            setShowShareModal(false);
+            setSelectedProject(null);
+          }}
+          projectTitle={selectedProject?.project_title || ""}
+          onShare={handleShare}
           loading={actionLoading}
         />
 
