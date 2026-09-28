@@ -167,8 +167,8 @@ const findOverlap = (annotations, start, end, excludeId) =>
   annotations.find((a) => a.id !== excludeId && start < a.endTime && end > a.startTime);
 
 
-// ------------------ DOWNLOAD FEATURE ------------------
-// --------------- Download audio segment ---------------
+// Download feature
+// Download audio segment
 // Load and decode the original recording
 const sanitizeFilePart = (value) => {
   const cleaned = String(value || "")
@@ -425,7 +425,7 @@ const verifyGeneratedWav = async (
     throw new Error("No audio file was generated.");
   }
 
-  // A PCM WAV requires at least the 44-byte header plus actual audio data.
+  // A PCM WAV requires at least the 44-byte header plus actual audio data
   if (blob.size <= 44) {
     throw new Error(
       "The generated audio file is empty."
@@ -442,7 +442,7 @@ const verifyGeneratedWav = async (
       ...bytes.slice(start, start + length)
     );
 
-  // WAV must contain RIFF at bytes 0-3 and WAVE at bytes 8-11.
+  // WAV must contain RIFF at bytes 0-3 and WAVE at bytes 8-11
   if (
     readText(0, 4) !== "RIFF" ||
     readText(8, 4) !== "WAVE"
@@ -501,12 +501,12 @@ const verifyGeneratedWav = async (
     try {
       await audioContext.close();
     } catch {
-      // Nothing else required.
+      // Nothing else required
     }
   }
 };
 
-// Broswer download function
+// Browser download function
 const downloadBlob = (blob, filename) => {
   const objectUrl =
     URL.createObjectURL(blob);
@@ -526,7 +526,7 @@ const downloadBlob = (blob, filename) => {
   }, 1000);
 };
 
-// Convert Firestore's createdAt
+// Format Firestore createdAt
 const formatExportDate = (value) => {
   if (!value) return null;
 
@@ -540,7 +540,7 @@ const formatExportDate = (value) => {
   return typeof value === "string" ? value : null;
 };
 
-// ---------- Download specific annotation ---------
+// Download specific annotation
 // Build the annotation export object (start/end timestamps, label, comment, duration, creation time)
 const buildAnnotationExportRecord = (annotation) => {
   if (!annotation) throw new Error("No annotation was selected.");
@@ -576,7 +576,7 @@ const escapeCsvValue = (value) => {
   return text;
 };
 
-// csv generator for one annotation
+// Generate CSV for one annotation
 const buildAnnotationCsv = (record) => {
   const row = {
     startTimeSeconds: record.startTimeSeconds,
@@ -641,7 +641,7 @@ const verifyAnnotationExport = (content, format) => {
   throw new Error("Unsupported annotation export format.");
 };
 
-// ---------- Download annotation and audio segment ---------
+// Download annotation and audio segment
 const verifyGeneratedZip = async (zipBlob, expectedFileNames) => {
   if (!(zipBlob instanceof Blob) || zipBlob.size === 0) {
     throw new Error("The generated ZIP file is empty.");
@@ -673,8 +673,8 @@ const verifyGeneratedZip = async (zipBlob, expectedFileNames) => {
 };
 
 
-// ---------- Download all annotations ---------
-// csv generator for al annotations
+// Download all annotations
+// Generate CSV for all annotations
 const buildAllAnnotationsCsv = (records) => {
   if (!Array.isArray(records) || records.length === 0) {
     throw new Error("There are no annotations to export.");
@@ -800,7 +800,7 @@ export default function AnnotationPage() {
   // Shared waveform/spectrogram synchronisation state.
   const [activeSelection, setActiveSelection] = useState(null);
 
-  // Professional zoom model:
+  // Zoom model:
   // 1x = fit the entire audio into the current waveform width.
   // Higher values zoom relative to that fitted width, regardless of audio length or screen size.
   const [zoomLevel, setZoomLevel] = useState(1);
@@ -838,7 +838,7 @@ export default function AnnotationPage() {
   // read the current zoom without being re-subscribed every time zoom changes.
   const zoomLevelRef = useRef(1);
 
-  // Annotation class selection.
+  // Annotation class selection
   // Default and Miscellaneous are built-in classes.
   // Custom labels are stored per user in Firestore and selected through a modal.
   const [selectedClassType, setSelectedClassType] = useState("Default Label");
@@ -867,7 +867,7 @@ export default function AnnotationPage() {
   const resizingRef = useRef(null); // "left" | "right" | null
 
 
-  // Download function states
+  // Download state
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [showAnnotationFormatOptions, setShowAnnotationFormatOptions] = useState(false);
   const [showCombinedFormatOptions, setShowCombinedFormatOptions] = useState(false);
@@ -878,7 +878,7 @@ export default function AnnotationPage() {
   const [exportFeedback, setExportFeedback] = useState(null);
   const downloadMenuRef = useRef(null);
 
-  // Mount / unmount marker for async setState guards.
+  // Track component mount state for async state updates
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
@@ -897,7 +897,7 @@ export default function AnnotationPage() {
   }, [zoomLevel]);
 
 
-  // Load project (the project doc doubles as the "file" — one project = one recording)
+  // Load project
   useEffect(() => {
     const loadProject = async () => {
       try {
@@ -942,7 +942,7 @@ export default function AnnotationPage() {
     loadProject();
   }, [ownerId, projectId, navigate]);
 
-  // Load project annotations in real time using the project owner path.
+  // Load project annotations in real time
   useEffect(() => {
     if (!ownerId) return;
 
@@ -960,7 +960,24 @@ export default function AnnotationPage() {
     return () => unsubscribe();
   }, [ownerId, projectId]);
 
-  // Load user-level custom labels in real time.
+  // Close the edit panel if the annotation currently being edited no longer exists.
+  useEffect(() => {
+    if (!isEditing || !selectedAnnotation?.id) return;
+
+    const annotationStillExists = annotations.some(
+      (annotation) => annotation.id === selectedAnnotation.id
+    );
+
+    if (!annotationStillExists) {
+      clearEditRegion();
+      setSelectedAnnotation(null);
+      setIsEditing(false);
+      setEditErrors({});
+      setEditWarning("");
+    }
+  }, [annotations, isEditing, selectedAnnotation]);
+
+  // Load user-level custom labels in real time
   useEffect(() => {
     if (!currentUserId) return;
 
@@ -983,7 +1000,7 @@ export default function AnnotationPage() {
     return () => unsubscribe();
   }, [currentUserId]);
 
-  // Initialise one shared WaveSurfer instance for both visualisations.
+  // Initialise shared WaveSurfer instance
   // The spectrogram uses the same audio/timeline. Region overlays, zoom and
   // scrolling are also mirrored so the two panes behave as one linked view.
   useEffect(() => {
@@ -1190,7 +1207,7 @@ export default function AnnotationPage() {
     setIsPlaying(false);
   };
 
-  // Applies a zoom level relative to a freshly-measured fit.
+  // Apply zoom level relative to the current fit
   // Wrapped in useCallback because it's referenced by the window resize
   // effect below, and we want the effect to see a stable reference.
   const applyZoomLevel = useCallback((level) => {
@@ -1253,7 +1270,7 @@ export default function AnnotationPage() {
     });
   }, [audioReady, duration]);
 
-  // Re-apply the current zoom level whenever the browser window is resized.
+  // Reapply zoom level when the browser window is resized
   // This keeps "Fit" (1x) genuinely fitting the current viewport width
   // instead of leaving stale pixels-per-second values from an earlier size.
   useEffect(() => {
@@ -1759,7 +1776,7 @@ export default function AnnotationPage() {
     setEditClassSearch("");
   };
 
-  // Now persists to Firestore, then updates what's shown in the panel.
+  // Save annotation edits to Firestore
   const handleSaveEdit = async () => {
     const start = parseFloat(editStart);
     const end = parseFloat(editEnd);
@@ -1869,10 +1886,10 @@ export default function AnnotationPage() {
     )
     : [];
 
-  // Determine which annotation is selected for download
+  // Determine selected annotation for download
   const exportSelectedAnnotation = annotations.find((annotation) => annotation.id === exportSelectedAnnotationId) || null;
 
-  // Close the dropdown if user clicks elsewhere or presses escape
+  // Close download menu on outside click or Escape
   useEffect(() => {
     if (!showDownloadMenu) return;
 
@@ -1906,7 +1923,7 @@ export default function AnnotationPage() {
   }, [showDownloadMenu]);
 
 
-  // Clear export selection if the annotation is deleted (because of real time Firestore storage)
+  // Clear export selection if the annotation is deleted in real time
   useEffect(() => {
     if (!exportSelectedAnnotationId) return;
 
@@ -1920,7 +1937,7 @@ export default function AnnotationPage() {
     }
   }, [annotations, exportSelectedAnnotationId,]);
 
-  // Actual Download Audio Segment handler
+  // Download audio segment handler
   const handleDownloadAudioSegment = async () => {
     if (!exportSelectedAnnotation) {
       setExportFeedback({
@@ -1997,7 +2014,7 @@ export default function AnnotationPage() {
     }
   };
 
-  // Actual Download Annotation Segment handler
+  // Download annotation handler
   const handleDownloadAnnotation = async (format) => {
     if (!exportSelectedAnnotation) {
       setExportFeedback({ type: "error", message: "Select an annotation before exporting annotation data." });
@@ -2069,7 +2086,7 @@ export default function AnnotationPage() {
     }
   };
 
-  // Actual Download Annotation & Audio Segment handler
+  // Download annotation and audio segment handler
   const handleDownloadAudioAndAnnotation = async (format) => {
     if (!exportSelectedAnnotation) {
       setExportFeedback({ type: "error", message: "Select an annotation before exporting audio and annotation data." });
@@ -2168,7 +2185,7 @@ export default function AnnotationPage() {
   };
 
 
-  // Actual Download All Annotations handler
+  // Download all annotations handler
   const handleDownloadAllAnnotations = async (format) => {
     if (annotations.length === 0) {
       setExportFeedback({ type: "error", message: "There are no annotations to export." });
@@ -2238,7 +2255,7 @@ export default function AnnotationPage() {
   };
 
 
-  // Actual Download All Annotations & Audio segments handler
+  // Download all annotations and audio segments handler
   const handleDownloadAllAnnotationsAndAudio = async (format) => {
     if (annotations.length === 0) {
       setExportFeedback({ type: "error", message: "There are no annotations to export." });
