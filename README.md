@@ -48,4 +48,18 @@ Use the built-in continuous integration in GitLab.
 * [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
 * [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
 
+## Third-Party Data
+
+### AudioSet Ontology
+
+AudioMark uses a curated subset of the Google AudioSet Ontology to provide predefined sound labels for audio annotations.
+
+- Source: Google AudioSet Ontology
+- Repository: https://github.com/audioset/ontology
+- License: Creative Commons Attribution-ShareAlike 4.0 (CC BY-SA 4.0)
+
+The ontology data used by AudioMark is stored in:
+
+`src/data/audioset-ontology.json`
+
 ***

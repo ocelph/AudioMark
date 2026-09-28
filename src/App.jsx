@@ -15,8 +15,13 @@ function App() {
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/dashboard" element={<DashboardPage />} />
+
         <Route path="/project/:projectId" element={<ProjectPage />} />
-        <Route path="/project/:projectId/annotation" element={<AnnotationPage />} />
+        <Route
+          path="/project/:projectId/annotation"
+          element={<AnnotationPage />}
+        />
+
         <Route path="/forgotpassword" element={<ForgotPassword />} />
         <Route path="/forgotpassword2" element={<ForgotPassword2 />} />
       </Routes>

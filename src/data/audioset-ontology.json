@@ -1,0 +1,156 @@
+[
+    {
+        "id": "/m/0dgw9r",
+        "name": "Human sounds",
+        "description": "Sounds produced by the human body.",
+        "child_ids": [
+            "/m/09l8g"
+        ],
+        "restrictions": [
+            "abstract"
+        ]
+    },
+    {
+        "id": "/m/09l8g",
+        "name": "Human voice",
+        "description": "Sounds made with the human voice.",
+        "child_ids": [
+            "/m/09x0r",
+            "/m/07p6fty",
+            "/m/03qc9zr",
+            "/m/02rtxlg",
+            "/m/01j3sz",
+            "/m/0463cq4",
+            "/m/07qw_06",
+            "/m/07plz5l",
+            "/m/015lz1"
+        ],
+        "restrictions": [
+            "abstract"
+        ]
+    },
+    {
+        "id": "/m/09x0r",
+        "name": "Speech",
+        "description": "Vocalized human communication.",
+        "child_ids": [],
+        "restrictions": []
+    },
+    {
+        "id": "/m/07p6fty",
+        "name": "Shout",
+        "description": "Speech in a loud voice.",
+        "child_ids": [],
+        "restrictions": []
+    },
+    {
+        "id": "/m/03qc9zr",
+        "name": "Screaming",
+        "description": "A sharp, high-pitched human vocalization.",
+        "child_ids": [],
+        "restrictions": []
+    },
+    {
+        "id": "/m/02rtxlg",
+        "name": "Whispering",
+        "description": "Quiet unvoiced speech.",
+        "child_ids": [],
+        "restrictions": []
+    },
+    {
+        "id": "/m/01j3sz",
+        "name": "Laughter",
+        "description": "Human laughter.",
+        "child_ids": [],
+        "restrictions": []
+    },
+    {
+        "id": "/m/0463cq4",
+        "name": "Crying, sobbing",
+        "description": "Human crying or sobbing.",
+        "child_ids": [],
+        "restrictions": []
+    },
+    {
+        "id": "/m/07qw_06",
+        "name": "Wail, moan",
+        "description": "A weak or soft emotional vocalization.",
+        "child_ids": [],
+        "restrictions": []
+    },
+    {
+        "id": "/m/07plz5l",
+        "name": "Sigh",
+        "description": "An audible exhalation.",
+        "child_ids": [],
+        "restrictions": []
+    },
+    {
+        "id": "/m/015lz1",
+        "name": "Singing",
+        "description": "Musical sounds produced with the human voice.",
+        "child_ids": [],
+        "restrictions": []
+    },
+    {
+        "id": "/m/0jbk",
+        "name": "Animal",
+        "description": "Sounds produced by animals.",
+        "child_ids": [
+            "/m/068hy",
+            "/m/0bt9lr"
+        ],
+        "restrictions": [
+            "abstract"
+        ]
+    },
+    {
+        "id": "/m/068hy",
+        "name": "Domestic animals, pets",
+        "description": "Sounds from domestic animals and pets.",
+        "child_ids": [],
+        "restrictions": []
+    },
+    {
+        "id": "/m/0bt9lr",
+        "name": "Bird",
+        "description": "Bird sounds.",
+        "child_ids": [],
+        "restrictions": []
+    },
+    {
+        "id": "/m/04rlf",
+        "name": "Music",
+        "description": "Musical sound.",
+        "child_ids": [],
+        "restrictions": []
+    },
+    {
+        "id": "/t/dd00092",
+        "name": "Wind",
+        "description": "Sound of wind.",
+        "child_ids": [],
+        "restrictions": []
+    },
+    {
+        "id": "/m/0ngt1",
+        "name": "Thunderstorm",
+        "description": "Sound associated with a thunderstorm.",
+        "child_ids": [],
+        "restrictions": []
+    },
+    {
+        "id": "/m/06mb1",
+        "name": "Rain",
+        "description": "Sound of rain.",
+        "child_ids": [],
+        "restrictions": []
+    },
+    {
+        "id": "/m/07jdr",
+        "name": "Ocean",
+        "description": "Ocean sound.",
+        "child_ids": [],
+        "restrictions": []
+    }
+]

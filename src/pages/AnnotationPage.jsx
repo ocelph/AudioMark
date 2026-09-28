@@ -1,15 +1,17 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { auth, db } from "../services/firebase";
 import { doc, getDoc, collection, addDoc, updateDoc, deleteDoc, serverTimestamp, onSnapshot, query, orderBy } from "firebase/firestore";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
 import Spectrogram from "wavesurfer.js/dist/plugins/spectrogram.js";
-import { Download, History, Share2, Maximize2, Search, Plus, X, Pencil, Trash2, ZoomIn, ZoomOut,ChevronDown, Scissors, FileText, Archive } from "lucide-react";
+import { Download, History, Share2, Maximize2, Search, Plus, X, Pencil, Trash2, ZoomIn, ZoomOut, ChevronDown, Scissors, FileText, Archive } from "lucide-react";
 import JSZip from "jszip";
+import MiscellaneousLabelModal from "../components/MiscellaneousLabelModal";
+
 
 // Built-in annotation class choices.
-// Project-level custom labels are created and selected through the Custom Label modal.
+// User-level custom labels are created and selected through the Custom Label modal.
 const DEFAULT_CLASSES = [
   { name: "Default Label", color: "#22c55e" },
   { name: "Custom Label", color: "#3b82f6" },
@@ -20,6 +22,12 @@ const PALETTE = ["#a855f7", "#ec4899", "#14b8a6", "#eab308", "#ef4444", "#06b6d4
 // Fixed zoom steps make Zoom In / Zoom Out deterministic.
 // 1 = Fit the entire recording to the available width.
 const ZOOM_LEVELS = [1, 1.5, 2, 3, 4, 6, 8];
+
+// Half a millisecond — used for float-safe timestamp comparison so that
+// values that should be equal (but differ by binary-representation noise)
+// are treated as the same.
+const TIME_EPSILON = 0.0005;
+const isSameTime = (a, b) => Math.abs(Number(a) - Number(b)) < TIME_EPSILON;
 
 const formatTimestamp = (seconds) => {
   const safeSeconds = Number.isFinite(Number(seconds)) ? Math.max(0, Number(seconds)) : 0;
@@ -130,7 +138,9 @@ const getInitials = (nameOrEmail) => {
 
 // Shared validation for both the manual "create" form and the "edit" form.
 // Checks required fields, a valid time range, length limits, and one hard
-// edge case (exact duplicate time range — blocked).
+// edge case (exact duplicate time range — blocked). Duplicate detection uses
+// an epsilon comparison so that float representation noise doesn't cause
+// two identical-looking annotations to slip through as "different".
 const validateAnnotationFields = ({ label, start, end, comment }, { annotations, excludeId }) => {
   const errors = {};
   const trimmedLabel = (label || "").trim();
@@ -145,7 +155,7 @@ const validateAnnotationFields = ({ label, start, end, comment }, { annotations,
 
   if (!errors.start && !errors.end) {
     const duplicate = annotations.some(
-      (a) => a.id !== excludeId && a.startTime === start && a.endTime === end
+      (a) => a.id !== excludeId && isSameTime(a.startTime, start) && isSameTime(a.endTime, end)
     );
     if (duplicate) errors.end = "An annotation with this exact time range already exists";
   }
@@ -347,16 +357,16 @@ const extractSegmentAsWav = (
 
   const timeTolerance = 0.01;
 
-if (start >= decodedAudio.duration) {
-  throw new Error("The annotation starts outside the source audio.");
-}
+  if (start >= decodedAudio.duration) {
+    throw new Error("The annotation starts outside the source audio.");
+  }
 
-if (end > decodedAudio.duration + timeTolerance) {
-  throw new Error("The annotation extends beyond the source audio duration.");
-}
+  if (end > decodedAudio.duration + timeTolerance) {
+    throw new Error("The annotation extends beyond the source audio duration.");
+  }
 
-const safeStart = start;
-const safeEnd = Math.min(end, decodedAudio.duration);
+  const safeStart = start;
+  const safeEnd = Math.min(end, decodedAudio.duration);
 
   const sampleRate = decodedAudio.sampleRate;
 
@@ -811,15 +821,39 @@ export default function AnnotationPage() {
   const regionsRef = useRef(null);
   const activeRegionRef = useRef(null);
   const syncingRegionRef = useRef(false);
+  const editingRegionRef = useRef(false);
+
+  // Guards against React state updates after unmount. Any async WaveSurfer
+  // callback (ready, timeupdate, error, etc.) checks this before calling
+  // setState to avoid the classic "state update on unmounted component" warning.
+  const isMountedRef = useRef(true);
+
+  // Tracks regions we created programmatically (e.g. when opening the edit
+  // panel) so we can skip the "region-created" handler for them. Without this
+  // guard, the handler could double-sync the form and cause visible jitter.
+  const programmaticRegionsRef = useRef(new WeakSet());
+
+  // Holds any pending requestAnimationFrame id for the spectrogram scroll
+  // mirror. Batching per animation frame prevents scroll drift when the user
+  // scrolls the waveform very rapidly.
+  const scrollRafRef = useRef(null);
+
+  // Latest zoom level captured in a ref. The window resize handler needs to
+  // read the current zoom without being re-subscribed every time zoom changes.
+  const zoomLevelRef = useRef(1);
 
   // Annotation class selection.
   // Default and Miscellaneous are built-in classes.
-  // Custom labels are stored per project in Firestore and selected through a modal.
+  // Custom labels are stored per user in Firestore and selected through a modal.
   const [selectedClassType, setSelectedClassType] = useState("Default Label");
   const [classSearch, setClassSearch] = useState("");
+  const [editClassSearch, setEditClassSearch] = useState("");
   const [customLabels, setCustomLabels] = useState([]);
   const [selectedCustomLabelId, setSelectedCustomLabelId] = useState("");
   const [showCustomLabelModal, setShowCustomLabelModal] = useState(false);
+  const [showMiscellaneousModal, setShowMiscellaneousModal] = useState(false);
+  const [miscellaneousModalMode, setMiscellaneousModalMode] = useState("create");
+  const [selectedMiscellaneousLabel, setSelectedMiscellaneousLabel] = useState(null);
   const [customLabelModalMode, setCustomLabelModalMode] = useState("create");
   const [customLabelSearch, setCustomLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
@@ -848,6 +882,25 @@ export default function AnnotationPage() {
   const [exportFeedback, setExportFeedback] = useState(null);
   const downloadMenuRef = useRef(null);
 
+  // Mount / unmount marker for async setState guards.
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (scrollRafRef.current) {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+    };
+  }, []);
+
+  // Keep the zoom-level ref in sync with state so the window resize handler
+  // reads the freshest value without being re-registered on every zoom.
+  useEffect(() => {
+    zoomLevelRef.current = zoomLevel;
+  }, [zoomLevel]);
+
+
   // Load project (the project doc doubles as the "file" — one project = one recording)
   useEffect(() => {
     const loadProject = async () => {
@@ -858,6 +911,7 @@ export default function AnnotationPage() {
           return;
         }
         const projectSnap = await getDoc(doc(db, "users", user.uid, "projects", projectId));
+        if (!isMountedRef.current) return;
         if (projectSnap.exists()) {
           const data = projectSnap.data();
           setFileName(data.project_title);
@@ -869,9 +923,9 @@ export default function AnnotationPage() {
         }
       } catch (err) {
         console.error("Error loading project:", err);
-        setError("Failed to load project.");
+        if (isMountedRef.current) setError("Failed to load project.");
       } finally {
-        setLoading(false);
+        if (isMountedRef.current) setLoading(false);
       }
     };
     loadProject();
@@ -885,26 +939,27 @@ export default function AnnotationPage() {
       orderBy("createdAt", "asc")
     );
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (!isMountedRef.current) return;
       const data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
       setAnnotations(data);
     });
     return () => unsubscribe();
   }, [uid, projectId]);
 
-  // Load project-level custom labels in real time.
+  // Load user-level custom labels in real time.
   useEffect(() => {
     if (!uid) return;
 
-    const labelsRef = collection(db, "users", uid, "projects", projectId, "labels");
+    const labelsRef = collection(db, "users", uid, "labels");
     const unsubscribe = onSnapshot(
       labelsRef,
       (snapshot) => {
+        if (!isMountedRef.current) return;
         const labels = snapshot.docs
           .map((d) => ({ id: d.id, ...d.data() }))
           .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
 
         setCustomLabels(labels);
-
       },
       (err) => {
         console.error("Failed to load custom labels:", err);
@@ -912,11 +967,11 @@ export default function AnnotationPage() {
     );
 
     return () => unsubscribe();
-  }, [uid, projectId]);
+  }, [uid]);
 
   // Initialise one shared WaveSurfer instance for both visualisations.
-  // The spectrogram uses the same audio/timeline. 
-  // Region overlays, zoom and scrolling are also mirrored so the two panes behave as one linked view.
+  // The spectrogram uses the same audio/timeline. Region overlays, zoom and
+  // scrolling are also mirrored so the two panes behave as one linked view.
   useEffect(() => {
     if (!audioUrl || !waveformRef.current || !spectrogramRef.current || !uid) return;
 
@@ -954,10 +1009,11 @@ export default function AnnotationPage() {
     });
 
     wavesurferRef.current = ws;
-
     regionsRef.current = regions;
 
     const unsubReady = ws.on("ready", (loadedDuration) => {
+      if (!isMountedRef.current) return;
+
       setDuration(loadedDuration);
       setCurrentTime(0);
       setAudioReady(true);
@@ -988,26 +1044,35 @@ export default function AnnotationPage() {
     });
 
     const unsubTime = ws.on("timeupdate", (time) => {
+      if (!isMountedRef.current) return;
       setCurrentTime(time);
     });
 
     // Keep track of the visible time window while zooming/scrolling.
+    // The spectrogram scroll mirror is batched per animation frame so that
+    // rapid scrolling on the waveform doesn't cause the spectrogram viewport
+    // to visibly lag or drift.
     const unsubScroll = ws.on("scroll", (visibleStartTime, visibleEndTime) => {
+      if (!isMountedRef.current) return;
+
       setVisibleRange({
         start: Number.isFinite(visibleStartTime) ? visibleStartTime : 0,
         end: Number.isFinite(visibleEndTime) ? visibleEndTime : ws.getDuration(),
       });
 
-      // Mirror WaveSurfer's horizontal scroll position into the spectrogram
-      // viewport. The spectrogram content uses the same pixel-per-second width,
-      // so both views remain horizontally aligned while zoomed.
-      const waveWrapper = ws.getWrapper?.();
-      if (waveWrapper && spectrogramViewportRef.current) {
-        spectrogramViewportRef.current.scrollLeft = waveWrapper.scrollLeft;
-      }
+      if (scrollRafRef.current !== null) return;
+
+      scrollRafRef.current = requestAnimationFrame(() => {
+        scrollRafRef.current = null;
+
+        const waveWrapper = ws.getWrapper?.();
+        if (waveWrapper && spectrogramViewportRef.current) {
+          spectrogramViewportRef.current.scrollLeft = waveWrapper.scrollLeft;
+        }
+      });
     });
 
-    const syncCreateFormFromRegion = (region) => {
+    const syncFormFromRegion = (region) => {
       if (!region || syncingRegionRef.current) return;
 
       activeRegionRef.current = region;
@@ -1015,42 +1080,63 @@ export default function AnnotationPage() {
       const start = Number(region.start.toFixed(3));
       const end = Number(region.end.toFixed(3));
 
-      setCreateStart(start);
-      setCreateEnd(end);
       setActiveSelection({ start, end });
-      setCreateErrors({});
+
+      if (editingRegionRef.current) {
+        setEditStart(start);
+        setEditEnd(end);
+        setEditErrors((prev) => ({ ...prev, start: undefined, end: undefined }));
+      } else {
+        setCreateStart(start);
+        setCreateEnd(end);
+        setCreateErrors((prev) => ({ ...prev, start: undefined, end: undefined }));
+      }
     };
 
     const unsubRegionCreated = regions.on("region-created", (region) => {
-      // New-annotation mode keeps one active selection. 
+      // Regions created programmatically (e.g. when the user opens the edit
+      // panel) are tracked in a WeakSet and skipped here so we don't
+      // double-sync the form or accidentally remove the region we just added.
+      if (programmaticRegionsRef.current.has(region)) {
+        programmaticRegionsRef.current.delete(region);
+        return;
+      }
+
+      // New-annotation mode keeps one active selection.
       // If the user drags a second region, discard the previous temporary selection.
       const previous = activeRegionRef.current;
       if (previous && previous !== region) {
         previous.remove();
       }
 
-      syncCreateFormFromRegion(region);
+      syncFormFromRegion(region);
     });
 
     const unsubRegionClicked = regions.on("region-clicked", (region, event) => {
       event?.stopPropagation?.();
-      syncCreateFormFromRegion(region);
+      syncFormFromRegion(region);
     });
 
     const unsubRegionUpdated = regions.on("region-updated", (region) => {
-      syncCreateFormFromRegion(region);
+      syncFormFromRegion(region);
     });
 
-    const unsubPlay = ws.on("play", () => setIsPlaying(true));
-    const unsubPause = ws.on("pause", () => setIsPlaying(false));
+    const unsubPlay = ws.on("play", () => {
+      if (isMountedRef.current) setIsPlaying(true);
+    });
+    const unsubPause = ws.on("pause", () => {
+      if (isMountedRef.current) setIsPlaying(false);
+    });
 
     const unsubFinish = ws.on("finish", () => {
+      if (!isMountedRef.current) return;
       setIsPlaying(false);
       setCurrentTime(ws.getDuration());
     });
 
     const unsubError = ws.on("error", (err) => {
       console.error("WaveSurfer failed to load audio:", err);
+      if (!isMountedRef.current) return;
       setAudioReady(false);
       setWaveformError("Unable to load this audio file. The file may be corrupted or use an unsupported audio format or codec.");
     });
@@ -1066,6 +1152,12 @@ export default function AnnotationPage() {
       unsubPause?.();
       unsubFinish?.();
       unsubError?.();
+
+      if (scrollRafRef.current !== null) {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+
       activeRegionRef.current = null;
       setActiveSelection(null);
       regionsRef.current = null;
@@ -1084,7 +1176,10 @@ export default function AnnotationPage() {
     setIsPlaying(false);
   };
 
-  const applyZoomLevel = (level) => {
+  // Applies a zoom level relative to a freshly-measured fit.
+  // Wrapped in useCallback because it's referenced by the window resize
+  // effect below, and we want the effect to see a stable reference.
+  const applyZoomLevel = useCallback((level) => {
     const ws = wavesurferRef.current;
     if (!ws || !audioReady || duration <= 0) return;
 
@@ -1094,7 +1189,6 @@ export default function AnnotationPage() {
     // Calculate Fit from the OUTER React container, not WaveSurfer's internal wrapper.
     // The internal wrapper/canvas changes width after zooming, which caused:
     // Fit -> 1.5x -> Zoom Out to remain visually zoomed in.
-
     // waveformRef.current is the stable viewport width available on the page.
     const viewportWidth =
       waveformRef.current?.getBoundingClientRect().width ||
@@ -1143,7 +1237,28 @@ export default function AnnotationPage() {
         spectrogramViewportRef.current.scrollLeft = nextScrollLeft;
       }
     });
-  };
+  }, [audioReady, duration]);
+
+  // Re-apply the current zoom level whenever the browser window is resized.
+  // This keeps "Fit" (1x) genuinely fitting the current viewport width
+  // instead of leaving stale pixels-per-second values from an earlier size.
+  useEffect(() => {
+    if (!audioReady || duration <= 0) return;
+
+    let debounceId = null;
+    const handleResize = () => {
+      if (debounceId) clearTimeout(debounceId);
+      debounceId = setTimeout(() => {
+        applyZoomLevel(zoomLevelRef.current);
+      }, 150);
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => {
+      if (debounceId) clearTimeout(debounceId);
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [audioReady, duration, applyZoomLevel]);
 
   const handleZoomIn = () => {
     const currentIndex = ZOOM_LEVELS.indexOf(zoomLevel);
@@ -1187,8 +1302,17 @@ export default function AnnotationPage() {
     if (end <= start) return;
 
     syncingRegionRef.current = true;
-    region.setOptions({ start, end });
-    syncingRegionRef.current = false;
+    try {
+      region.setOptions({ start, end });
+    } finally {
+      // Use a microtask to release the guard AFTER any synchronous
+      // region-updated event has finished, and also on the next tick to
+      // cover async firings — whichever happens, we won't feed our own
+      // programmatic update back into the form.
+      Promise.resolve().then(() => {
+        syncingRegionRef.current = false;
+      });
+    }
 
     setActiveSelection({
       start: Number(start.toFixed(3)),
@@ -1257,10 +1381,20 @@ export default function AnnotationPage() {
           type: "custom",
         }
         : null
-      : {
-        ...DEFAULT_CLASSES.find((item) => item.name === selectedClassType),
-        type: "default",
-      };
+      : selectedClassType === "Miscellaneous"
+        ? selectedMiscellaneousLabel
+          ? {
+            name: selectedMiscellaneousLabel.name,
+            color: "#f97316",
+            type: "miscellaneous",
+            source: "audioset",
+            sourceId: selectedMiscellaneousLabel.id,
+          }
+          : null
+        : {
+          ...DEFAULT_CLASSES.find((item) => item.name === selectedClassType),
+          type: "default",
+        };
 
   const normalizedClassSearch = classSearch.trim().toLowerCase();
 
@@ -1295,11 +1429,20 @@ export default function AnnotationPage() {
 
     if (className === "Custom Label") {
       setSelectedClassType("Custom Label");
+      setSelectedMiscellaneousLabel(null);
       openCustomLabelModal("create");
       return;
     }
 
+    if (className === "Miscellaneous") {
+      setMiscellaneousModalMode("create");
+      setShowMiscellaneousModal(true);
+      return;
+    }
+
     setSelectedClassType(className);
+    setSelectedCustomLabelId("");
+    setSelectedMiscellaneousLabel(null);
   };
 
   const handleSelectCustomLabel = (label) => {
@@ -1324,6 +1467,29 @@ export default function AnnotationPage() {
     setCustomLabelSearch("");
     setNewLabelName("");
     setCustomLabelError("");
+  };
+
+  const handleSelectMiscellaneousLabel = (sound) => {
+    const annotationClass = {
+      name: sound.name,
+      color: "#f97316",
+      type: "miscellaneous",
+      source: "audioset",
+      sourceId: sound.id,
+    };
+
+    if (miscellaneousModalMode === "edit") {
+      setEditLabel(sound.name);
+      setEditAnnotationClass(annotationClass);
+      setEditErrors((prev) => ({ ...prev, label: undefined }));
+    } else {
+      setSelectedClassType("Miscellaneous");
+      setSelectedMiscellaneousLabel(sound);
+      setSelectedCustomLabelId("");
+      setCreateErrors((prev) => ({ ...prev, label: undefined }));
+    }
+
+    setShowMiscellaneousModal(false);
   };
 
   const handleCreateCustomLabel = async () => {
@@ -1355,13 +1521,15 @@ export default function AnnotationPage() {
 
     try {
       const color = PALETTE[customLabels.length % PALETTE.length];
-      const labelsRef = collection(db, "users", uid, "projects", projectId, "labels");
+      const labelsRef = collection(db, "users", uid, "labels");
 
       const docRef = await addDoc(labelsRef, {
         name: trimmed,
         color,
         createdAt: serverTimestamp(),
       });
+
+      if (!isMountedRef.current) return;
 
       // Select immediately; the real-time listener will populate the full list.
       const createdLabel = { id: docRef.id, name: trimmed, color };
@@ -1391,9 +1559,9 @@ export default function AnnotationPage() {
       setNewLabelName("");
     } catch (err) {
       console.error("Failed to create custom label:", err);
-      setCustomLabelError("Failed to create the label. Please try again.");
+      if (isMountedRef.current) setCustomLabelError("Failed to create the label. Please try again.");
     } finally {
-      setIsCreatingLabel(false);
+      if (isMountedRef.current) setIsCreatingLabel(false);
     }
   };
 
@@ -1412,6 +1580,10 @@ export default function AnnotationPage() {
 
     if (selectedClassType === "Custom Label" && !selectedCustomLabel) {
       errors.label = "Select or create a custom label.";
+    }
+
+    if (selectedClassType === "Miscellaneous" && !selectedMiscellaneousLabel) {
+      errors.label = "Select a predefined sound label.";
     }
 
     if (duration > 0) {
@@ -1435,6 +1607,8 @@ export default function AnnotationPage() {
         createdAt: serverTimestamp(),
       });
 
+      if (!isMountedRef.current) return;
+
       setCreateStart(0);
       setCreateEnd(0);
       setCreateComment("");
@@ -1449,6 +1623,61 @@ export default function AnnotationPage() {
     } catch (err) {
       console.error("Failed to create annotation:", err);
     }
+  };
+
+  const handleEditStartChange = (nextStart) => {
+    const start = clampToDuration(nextStart);
+    setEditStart(start);
+    setEditErrors((prev) => ({ ...prev, start: undefined }));
+    updateActiveRegionFromTimestamps(start, editEnd);
+  };
+
+  const handleEditEndChange = (nextEnd) => {
+    const end = clampToDuration(nextEnd);
+    setEditEnd(end);
+    setEditErrors((prev) => ({ ...prev, end: undefined }));
+    updateActiveRegionFromTimestamps(editStart, end);
+  };
+
+  const showEditAnnotationRegion = (annotation) => {
+    const regions = regionsRef.current;
+    const ws = wavesurferRef.current;
+    if (!regions || !ws || !audioReady || !annotation) return;
+
+    const start = clampToDuration(annotation.startTime);
+    const end = clampToDuration(annotation.endTime);
+    if (end <= start) return;
+
+    activeRegionRef.current?.remove();
+    syncingRegionRef.current = true;
+    editingRegionRef.current = true;
+
+    const region = regions.addRegion({
+      start,
+      end,
+      color: "rgba(99, 102, 241, 0.25)",
+      drag: true,
+      resize: true,
+    });
+
+    // Mark this region as programmatic so the "region-created" handler
+    // ignores it. The WeakSet drops the reference automatically when the
+    // region is removed, so we don't need to clean it up manually.
+    programmaticRegionsRef.current.add(region);
+
+    activeRegionRef.current = region;
+    setActiveSelection({
+      start: Number(start.toFixed(3)),
+      end: Number(end.toFixed(3)),
+    });
+
+    // Release the sync guard on the next microtask so any synchronous
+    // region-updated fired by addRegion has finished first.
+    Promise.resolve().then(() => {
+      syncingRegionRef.current = false;
+    });
+
+    ws.setTime(start);
   };
 
   const handleEditOpen = (annotation) => {
@@ -1466,40 +1695,49 @@ export default function AnnotationPage() {
     setEditComment(annotation.comment || "");
     setEditErrors({});
     setEditWarning("");
+    setEditClassSearch("");
+    editingRegionRef.current = true;
     setIsEditing(true);
+    showEditAnnotationRegion(annotation);
   };
 
-  const handleEditLabelChange = (value) => {
-    if (value === "__custom__") {
+  const handleEditSelectClassType = (className) => {
+    setEditErrors((prev) => ({ ...prev, label: undefined }));
+
+    if (className === "Custom Label") {
       openCustomLabelModal("edit");
       return;
     }
 
+    if (className === "Miscellaneous") {
+      setMiscellaneousModalMode("edit");
+      setShowMiscellaneousModal(true);
+      return;
+    }
+
     const builtInClass = DEFAULT_CLASSES.find(
-      (annotationClass) => annotationClass.name === value
+      (annotationClass) => annotationClass.name === className
     );
 
-    if (builtInClass && builtInClass.name !== "Custom Label") {
+    if (builtInClass) {
       setEditLabel(builtInClass.name);
       setEditAnnotationClass({
         ...builtInClass,
         type: "default",
       });
-      setEditErrors((prev) => ({ ...prev, label: undefined }));
-      return;
     }
+  };
 
-    const customLabel = customLabels.find((label) => label.id === value);
-    if (customLabel) {
-      setEditLabel(customLabel.name);
-      setEditAnnotationClass({
-        id: customLabel.id,
-        name: customLabel.name,
-        color: customLabel.color || "#3b82f6",
-        type: "custom",
-      });
-      setEditErrors((prev) => ({ ...prev, label: undefined }));
-    }
+  const handleEditSelectCustomLabel = (label) => {
+    setEditLabel(label.name);
+    setEditAnnotationClass({
+      id: label.id,
+      name: label.name,
+      color: label.color || "#3b82f6",
+      type: "custom",
+    });
+    setEditErrors((prev) => ({ ...prev, label: undefined }));
+    setEditClassSearch("");
   };
 
   // Now persists to Firestore, then updates what's shown in the panel.
@@ -1530,6 +1768,14 @@ export default function AnnotationPage() {
         endTime: end,
         comment: editComment.trim(),
       });
+
+      if (!isMountedRef.current) return;
+
+      activeRegionRef.current?.remove();
+      activeRegionRef.current = null;
+      editingRegionRef.current = false;
+      setActiveSelection(null);
+
       setSelectedAnnotation(null);
       setIsEditing(false);
       setEditErrors({});
@@ -1539,7 +1785,15 @@ export default function AnnotationPage() {
     }
   };
 
+  const clearEditRegion = () => {
+    activeRegionRef.current?.remove();
+    activeRegionRef.current = null;
+    editingRegionRef.current = false;
+    setActiveSelection(null);
+  };
+
   const handleCancelEdit = () => {
+    clearEditRegion();
     setSelectedAnnotation(null);
     setIsEditing(false);
     setEditErrors({});
@@ -1547,6 +1801,7 @@ export default function AnnotationPage() {
   };
 
   const handleClosePanel = () => {
+    clearEditRegion();
     setSelectedAnnotation(null);
     setIsEditing(false);
     setEditErrors({});
@@ -1561,7 +1816,8 @@ export default function AnnotationPage() {
   const handleConfirmDelete = async () => {
     try {
       await deleteDoc(doc(db, "users", uid, "projects", projectId, "annotations", annotationToDelete.id));
-      
+      if (!isMountedRef.current) return;
+
       if (exportSelectedAnnotationId === annotationToDelete.id) {
         setExportSelectedAnnotationId(null);
       }
@@ -1582,10 +1838,20 @@ export default function AnnotationPage() {
     setAnnotationToDelete(null);
   };
 
-// determine which annotation is selected for download
-  const exportSelectedAnnotation = annotations.find( (annotation) => annotation.id === exportSelectedAnnotationId) || null;
+  const normalizedEditClassSearch = editClassSearch.trim().toLowerCase();
+  const filteredEditDefaultClasses = DEFAULT_CLASSES.filter((annotationClass) =>
+    annotationClass.name.toLowerCase().includes(normalizedEditClassSearch)
+  );
+  const filteredEditCustomLabels = normalizedEditClassSearch
+    ? customLabels.filter((label) =>
+      (label.name || "").toLowerCase().includes(normalizedEditClassSearch)
+    )
+    : [];
 
-    // close the dropdown if user clicks elsewhere or presses escape
+  // determine which annotation is selected for download
+  const exportSelectedAnnotation = annotations.find((annotation) => annotation.id === exportSelectedAnnotationId) || null;
+
+  // close the dropdown if user clicks elsewhere or presses escape
   useEffect(() => {
     if (!showDownloadMenu) return;
 
@@ -1619,7 +1885,7 @@ export default function AnnotationPage() {
   }, [showDownloadMenu]);
 
 
-// clear export selection if the annotation is deleted (because of real time Firestore storage)
+  // clear export selection if the annotation is deleted (because of real time Firestore storage)
   useEffect(() => {
     if (!exportSelectedAnnotationId) return;
 
@@ -1631,84 +1897,84 @@ export default function AnnotationPage() {
     if (!stillExists) {
       setExportSelectedAnnotationId(null);
     }
-  }, [annotations,exportSelectedAnnotationId,]);
+  }, [annotations, exportSelectedAnnotationId,]);
 
   // actual Download Audio Segment handler
   const handleDownloadAudioSegment = async () => {
-  if (!exportSelectedAnnotation) {
-    setExportFeedback({
-      type: "error",
-      message:
-        "Select an annotation before downloading an audio segment.",
-    });
+    if (!exportSelectedAnnotation) {
+      setExportFeedback({
+        type: "error",
+        message:
+          "Select an annotation before downloading an audio segment.",
+      });
 
-    return;
-  }
+      return;
+    }
 
-  if (!audioUrl) {
-    setExportFeedback({
-      type: "error",
-      message:
-        "The project's audio file is unavailable.",
-    });
+    if (!audioUrl) {
+      setExportFeedback({
+        type: "error",
+        message:
+          "The project's audio file is unavailable.",
+      });
 
-    return;
-  }
+      return;
+    }
 
-  setShowDownloadMenu(false);
-  setShowAnnotationFormatOptions(false);
-  setShowCombinedFormatOptions(false);
-  setShowAllAnnotationsFormatOptions(false);
-  setShowAllCombinedFormatOptions(false);
-  setIsExporting(true);
+    setShowDownloadMenu(false);
+    setShowAnnotationFormatOptions(false);
+    setShowCombinedFormatOptions(false);
+    setShowAllAnnotationsFormatOptions(false);
+    setShowAllCombinedFormatOptions(false);
+    setIsExporting(true);
 
-  setExportFeedback({type: "loading", message: "Generating audio segment...", });
+    setExportFeedback({ type: "loading", message: "Generating audio segment...", });
 
-  try {
-     // 1. Download + decode the project's original recording.
-    const decodedAudio = await loadAndDecodeAudio(audioUrl);
+    try {
+      // 1. Download + decode the project's original recording.
+      const decodedAudio = await loadAndDecodeAudio(audioUrl);
 
-    
-     // 2. Extract the samples belonging to the selected annotation.
-    const {blob,duration: extractedDuration,} = extractSegmentAsWav(decodedAudio, exportSelectedAnnotation.startTime, exportSelectedAnnotation.endTime);
 
-    
-     // 3. Verify the newly generated WAV before allowing it to download.
-    await verifyGeneratedWav(blob,extractedDuration);
+      // 2. Extract the samples belonging to the selected annotation.
+      const { blob, duration: extractedDuration, } = extractSegmentAsWav(decodedAudio, exportSelectedAnnotation.startTime, exportSelectedAnnotation.endTime);
 
-    
-     // 4. Build a safe filename.
-    const projectPart = sanitizeFilePart(fileName);
-    const labelPart = sanitizeFilePart( exportSelectedAnnotation.label);
-    const startPart = formatSecondsForFileName( exportSelectedAnnotation.startTime);
-    const endPart = formatSecondsForFileName( exportSelectedAnnotation.endTime);
-    const exportFileName = `${projectPart}_${labelPart}_` + `${startPart}s-${endPart}s.wav`;
 
-    
-     // 5. Only now start the browser download.
-    downloadBlob( blob, exportFileName);
+      // 3. Verify the newly generated WAV before allowing it to download.
+      await verifyGeneratedWav(blob, extractedDuration);
 
-    setExportFeedback({
-      type: "success",
-      message:
-        "Audio segment generated successfully. Download started.",
-    });
-  } catch (err) {
-    console.error(
-      "Failed to export audio segment:",
-      err
-    );
 
-    setExportFeedback({
-      type: "error",
-      message:
-        err?.message ||
-        "The audio segment could not be generated.",
-    });
-  } finally {
-    setIsExporting(false);
-  }
-};
+      // 4. Build a safe filename.
+      const projectPart = sanitizeFilePart(fileName);
+      const labelPart = sanitizeFilePart(exportSelectedAnnotation.label);
+      const startPart = formatSecondsForFileName(exportSelectedAnnotation.startTime);
+      const endPart = formatSecondsForFileName(exportSelectedAnnotation.endTime);
+      const exportFileName = `${projectPart}_${labelPart}_` + `${startPart}s-${endPart}s.wav`;
+
+
+      // 5. Only now start the browser download.
+      downloadBlob(blob, exportFileName);
+
+      setExportFeedback({
+        type: "success",
+        message:
+          "Audio segment generated successfully. Download started.",
+      });
+    } catch (err) {
+      console.error(
+        "Failed to export audio segment:",
+        err
+      );
+
+      setExportFeedback({
+        type: "error",
+        message:
+          err?.message ||
+          "The audio segment could not be generated.",
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   // actual Download Annotation Segment handler
   const handleDownloadAnnotation = async (format) => {
@@ -1883,193 +2149,194 @@ export default function AnnotationPage() {
 
   // actual Download All Annotations handler
   const handleDownloadAllAnnotations = async (format) => {
-  if (annotations.length === 0) {
-    setExportFeedback({ type: "error", message: "There are no annotations to export." });
-    return;
-  }
-
-  if (format !== "json" && format !== "csv") {
-    setExportFeedback({ type: "error", message: "Unsupported annotation export format." });
-    return;
-  }
-
-  setShowDownloadMenu(false);
-  setShowAnnotationFormatOptions(false);
-  setShowCombinedFormatOptions(false);
-  setShowAllAnnotationsFormatOptions(false);
-  setShowAllCombinedFormatOptions(false);
-  setIsExporting(true);
-  setExportFeedback({ type: "loading", message: `Generating ${format.toUpperCase()} export for all annotations...` });
-
-  try {
-    // 1. Convert every project annotation into the same export structure used for individual exports.
-    const records = annotations.map((annotation) => buildAnnotationExportRecord(annotation));
-
-    // 2. Generate the requested file format.
-    let content;
-    let mimeType;
-
-    if (format === "json") {
-      content = JSON.stringify(records, null, 2);
-      mimeType = "application/json;charset=utf-8";
-    } else {
-      content = buildAllAnnotationsCsv(records);
-      mimeType = "text/csv;charset=utf-8";
+    if (annotations.length === 0) {
+      setExportFeedback({ type: "error", message: "There are no annotations to export." });
+      return;
     }
 
-    // 3. Verify the generated export before downloading it.
-    verifyAllAnnotationsExport(content, format, records.length);
-
-    // 4. Add a UTF-8 BOM to CSV for better spreadsheet compatibility.
-    const fileContent = format === "csv" ? `\uFEFF${content}` : content;
-    const blob = new Blob([fileContent], { type: mimeType });
-
-    if (blob.size === 0) {
-      throw new Error(`The generated ${format.toUpperCase()} file is empty.`);
+    if (format !== "json" && format !== "csv") {
+      setExportFeedback({ type: "error", message: "Unsupported annotation export format." });
+      return;
     }
 
-    // 5. Build the filename and start the browser download.
-    const projectPart = sanitizeFilePart(fileName);
-    const exportFileName = `${projectPart}_all_annotations.${format}`;
+    setShowDownloadMenu(false);
+    setShowAnnotationFormatOptions(false);
+    setShowCombinedFormatOptions(false);
+    setShowAllAnnotationsFormatOptions(false);
+    setShowAllCombinedFormatOptions(false);
+    setIsExporting(true);
+    setExportFeedback({ type: "loading", message: `Generating ${format.toUpperCase()} export for all annotations...` });
 
-    downloadBlob(blob, exportFileName);
+    try {
+      // 1. Convert every project annotation into the same export structure used for individual exports.
+      const records = annotations.map((annotation) => buildAnnotationExportRecord(annotation));
 
-    setExportFeedback({
-      type: "success",
-      message: `All ${records.length} annotations were generated successfully as ${format.toUpperCase()}. Download started.`,
-    });
-  } catch (err) {
-    console.error("Failed to export all annotations:", err);
-
-    setExportFeedback({
-      type: "error",
-      message: err?.message || "The annotations export could not be generated.",
-    });
-  } finally {
-    setIsExporting(false);
-  }
-};
-
-
-// actual Download All Annotations & Audio segments handler
-const handleDownloadAllAnnotationsAndAudio = async (format) => {
-  if (annotations.length === 0) {
-    setExportFeedback({ type: "error", message: "There are no annotations to export." });
-    return;
-  }
-
-  if (!audioUrl) {
-    setExportFeedback({ type: "error", message: "The project's audio file is unavailable." });
-    return;
-  }
-
-  if (format !== "json" && format !== "csv") {
-    setExportFeedback({ type: "error", message: "Unsupported annotation export format." });
-    return;
-  }
-
-  setShowDownloadMenu(false);
-  setShowAnnotationFormatOptions(false);
-  setShowCombinedFormatOptions(false);
-  setShowAllAnnotationsFormatOptions(false);
-  setShowAllCombinedFormatOptions(false);
-  setIsExporting(true);
-  setExportFeedback({ type: "loading", message: "Preparing all annotation and audio segments..." });
-
-  try {
-    // 1. Download and decode the source recording ONCE.
-    const decodedAudio = await loadAndDecodeAudio(audioUrl);
-
-    // 2. Create the ZIP.
-    const zip = new JSZip();
-    const expectedFileNames = [];
-
-    // 3. Generate one WAV + annotation file for every annotation.
-    for (let index = 0; index < annotations.length; index++) {
-      const annotation = annotations[index];
-
-      setExportFeedback({
-        type: "loading",
-        message: `Generating segment ${index + 1} of ${annotations.length}...`,
-      });
-
-      // Build and validate the annotation record.
-      const annotationRecord = buildAnnotationExportRecord(annotation);
-
-      // Extract and verify this annotation's WAV.
-      const { blob: audioBlob, duration: extractedDuration } = extractSegmentAsWav(
-        decodedAudio,
-        annotation.startTime,
-        annotation.endTime
-      );
-
-      await verifyGeneratedWav(audioBlob, extractedDuration);
-
-      // Generate annotation JSON or CSV.
-      let annotationContent;
+      // 2. Generate the requested file format.
+      let content;
+      let mimeType;
 
       if (format === "json") {
-        annotationContent = JSON.stringify(annotationRecord, null, 2);
-        verifyAnnotationExport(annotationContent, "json");
+        content = JSON.stringify(records, null, 2);
+        mimeType = "application/json;charset=utf-8";
       } else {
-        const csvContent = buildAnnotationCsv(annotationRecord);
-        verifyAnnotationExport(csvContent, "csv");
-        annotationContent = `\uFEFF${csvContent}`;
+        content = buildAllAnnotationsCsv(records);
+        mimeType = "text/csv;charset=utf-8";
       }
 
-      // Build unique matching filenames.
-      const numberPart = String(index + 1).padStart(3, "0");
-      const labelPart = sanitizeFilePart(annotation.label);
-      const startPart = formatSecondsForFileName(annotation.startTime);
-      const endPart = formatSecondsForFileName(annotation.endTime);
-      const baseName = `${numberPart}_${labelPart}_${startPart}s-${endPart}s`;
+      // 3. Verify the generated export before downloading it.
+      verifyAllAnnotationsExport(content, format, records.length);
 
-      const audioFileName = `${baseName}_audio.wav`;
-      const annotationFileName = `${baseName}_annotation.${format}`;
+      // 4. Add a UTF-8 BOM to CSV for better spreadsheet compatibility.
+      const fileContent = format === "csv" ? `\uFEFF${content}` : content;
+      const blob = new Blob([fileContent], { type: mimeType });
 
-      const audioPath = `segments/${audioFileName}`;
-      const annotationPath = `segments/${annotationFileName}`;
+      if (blob.size === 0) {
+        throw new Error(`The generated ${format.toUpperCase()} file is empty.`);
+      }
 
-      // Add both files to the ZIP.
-      zip.file(audioPath, audioBlob);
-      zip.file(annotationPath, annotationContent);
+      // 5. Build the filename and start the browser download.
+      const projectPart = sanitizeFilePart(fileName);
+      const exportFileName = `${projectPart}_all_annotations.${format}`;
 
-      expectedFileNames.push(audioPath, annotationPath);
+      downloadBlob(blob, exportFileName);
+
+      setExportFeedback({
+        type: "success",
+        message: `All ${records.length} annotations were generated successfully as ${format.toUpperCase()}. Download started.`,
+      });
+    } catch (err) {
+      console.error("Failed to export all annotations:", err);
+
+      setExportFeedback({
+        type: "error",
+        message: err?.message || "The annotations export could not be generated.",
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+
+  // actual Download All Annotations & Audio segments handler
+  const handleDownloadAllAnnotationsAndAudio = async (format) => {
+    if (annotations.length === 0) {
+      setExportFeedback({ type: "error", message: "There are no annotations to export." });
+      return;
     }
 
-    setExportFeedback({ type: "loading", message: "Packaging and verifying ZIP file..." });
+    if (!audioUrl) {
+      setExportFeedback({ type: "error", message: "The project's audio file is unavailable." });
+      return;
+    }
 
-    // 4. Generate the finished ZIP.
-    const zipBlob = await zip.generateAsync({
-      type: "blob",
-      compression: "DEFLATE",
-      compressionOptions: { level: 6 },
-    });
+    if (format !== "json" && format !== "csv") {
+      setExportFeedback({ type: "error", message: "Unsupported annotation export format." });
+      return;
+    }
 
-    // 5. Verify every expected file exists and is non-empty.
-    await verifyGeneratedZip(zipBlob, expectedFileNames);
+    setShowDownloadMenu(false);
+    setShowAnnotationFormatOptions(false);
+    setShowCombinedFormatOptions(false);
+    setShowAllAnnotationsFormatOptions(false);
+    setShowAllCombinedFormatOptions(false);
+    setIsExporting(true);
+    setExportFeedback({ type: "loading", message: "Preparing all annotation and audio segments..." });
 
-    // 6. Download only after everything succeeds.
-    const projectPart = sanitizeFilePart(fileName);
-    const zipFileName = `${projectPart}_all_annotations_and_audio.zip`;
+    try {
+      // 1. Download and decode the source recording ONCE.
+      const decodedAudio = await loadAndDecodeAudio(audioUrl);
 
-    downloadBlob(zipBlob, zipFileName);
+      // 2. Create the ZIP.
+      const zip = new JSZip();
+      const expectedFileNames = [];
 
-    setExportFeedback({
-      type: "success",
-      message: `All ${annotations.length} audio segments and annotations were generated successfully. Download started.`,
-    });
-  } catch (err) {
-    console.error("Failed to export all annotations and audio:", err);
+      // 3. Generate one WAV + annotation file for every annotation.
+      for (let index = 0; index < annotations.length; index++) {
+        const annotation = annotations[index];
 
-    setExportFeedback({
-      type: "error",
-      message: err?.message || "The annotations and audio ZIP could not be generated.",
-    });
-  } finally {
-    setIsExporting(false);
-  }
-};
+        setExportFeedback({
+          type: "loading",
+          message: `Generating segment ${index + 1} of ${annotations.length}...`,
+        });
+
+        // Build and validate the annotation record.
+        const annotationRecord = buildAnnotationExportRecord(annotation);
+
+        // Extract and verify this annotation's WAV.
+        const { blob: audioBlob, duration: extractedDuration } = extractSegmentAsWav(
+          decodedAudio,
+          annotation.startTime,
+          annotation.endTime
+        );
+
+        await verifyGeneratedWav(audioBlob, extractedDuration);
+
+        // Generate annotation JSON or CSV.
+        let annotationContent;
+
+        if (format === "json") {
+          annotationContent = JSON.stringify(annotationRecord, null, 2);
+          verifyAnnotationExport(annotationContent, "json");
+        } else {
+          const csvContent = buildAnnotationCsv(annotationRecord);
+          verifyAnnotationExport(csvContent, "csv");
+          annotationContent = `\uFEFF${csvContent}`;
+        }
+
+        // Build unique matching filenames.
+        const numberPart = String(index + 1).padStart(3, "0");
+        const labelPart = sanitizeFilePart(annotation.label);
+        const startPart = formatSecondsForFileName(annotation.startTime);
+        const endPart = formatSecondsForFileName(annotation.endTime);
+        const baseName = `${numberPart}_${labelPart}_${startPart}s-${endPart}s`;
+
+        const audioFileName = `${baseName}_audio.wav`;
+        const annotationFileName = `${baseName}_annotation.${format}`;
+
+        const audioPath = `segments/${audioFileName}`;
+        const annotationPath = `segments/${annotationFileName}`;
+
+        // Add both files to the ZIP.
+        zip.file(audioPath, audioBlob);
+        zip.file(annotationPath, annotationContent);
+
+        expectedFileNames.push(audioPath, annotationPath);
+      }
+
+      setExportFeedback({ type: "loading", message: "Packaging and verifying ZIP file..." });
+
+      // 4. Generate the finished ZIP.
+      const zipBlob = await zip.generateAsync({
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: { level: 6 },
+      });
+
+      // 5. Verify every expected file exists and is non-empty.
+      await verifyGeneratedZip(zipBlob, expectedFileNames);
+
+      // 6. Download only after everything succeeds.
+      const projectPart = sanitizeFilePart(fileName);
+      const zipFileName = `${projectPart}_all_annotations_and_audio.zip`;
+
+      downloadBlob(zipBlob, zipFileName);
+
+      setExportFeedback({
+        type: "success",
+        message: `All ${annotations.length} audio segments and annotations were generated successfully. Download started.`,
+      });
+    } catch (err) {
+      console.error("Failed to export all annotations and audio:", err);
+
+      setExportFeedback({
+        type: "error",
+        message: err?.message || "The annotations and audio ZIP could not be generated.",
+      });
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
 
   if (loading) return (
     <div className="flex h-screen items-center justify-center bg-slate-50">
@@ -2107,25 +2374,25 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
         {/* Non-functional placeholders — separate tickets */}
         <div className="flex items-center gap-2">
           <div ref={downloadMenuRef} className="relative">
-            <button type="button" 
-            onClick={() => { 
-              if (showDownloadMenu) {
-                setShowAnnotationFormatOptions(false);
-                setShowCombinedFormatOptions(false);
-                setShowAllAnnotationsFormatOptions(false);
-                setShowAllCombinedFormatOptions(false);
-              }
-              
-              setShowDownloadMenu(!showDownloadMenu);
-            }}
-              disabled={isExporting} 
+            <button type="button"
+              onClick={() => {
+                if (showDownloadMenu) {
+                  setShowAnnotationFormatOptions(false);
+                  setShowCombinedFormatOptions(false);
+                  setShowAllAnnotationsFormatOptions(false);
+                  setShowAllCombinedFormatOptions(false);
+                }
+
+                setShowDownloadMenu(!showDownloadMenu);
+              }}
+              disabled={isExporting}
               aria-expanded={showDownloadMenu}
               className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Download className="h-4 w-4" />
 
               {isExporting ? "Exporting..." : "Download"}
-              <ChevronDown className={`h-3.5 w-3.5 transition ${showDownloadMenu ? "rotate-180" : ""}`}/>
+              <ChevronDown className={`h-3.5 w-3.5 transition ${showDownloadMenu ? "rotate-180" : ""}`} />
             </button>
 
             {showDownloadMenu && (
@@ -2145,7 +2412,7 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
                 </div>
 
                 <div className="p-2">
-                  <button type="button" disabled={!exportSelectedAnnotation || isExporting } onClick={ handleDownloadAudioSegment }
+                  <button type="button" disabled={!exportSelectedAnnotation || isExporting} onClick={handleDownloadAudioSegment}
                     className="flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <Scissors className="mt-0.5 h-4 w-4 flex-shrink-0 text-indigo-500" />
@@ -2155,7 +2422,7 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
                     </div>
                   </button>
 
-                  
+
                   <div>
                     <button
                       type="button"
@@ -2202,7 +2469,7 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
                     )}
                   </div>
 
-                  
+
                   <div>
                     <button
                       type="button"
@@ -2363,25 +2630,24 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
 
       {/* Export feedback */}
       {exportFeedback && (
-          <div
-            className={`border-b px-6 py-2 text-sm ${
-              exportFeedback.type === "success" ? "border-green-200 bg-green-50 text-green-700" : exportFeedback.type === "error" ? "border-red-200 bg-red-50 text-red-700" : "border-indigo-200 bg-indigo-50 text-indigo-700"
+        <div
+          className={`border-b px-6 py-2 text-sm ${exportFeedback.type === "success" ? "border-green-200 bg-green-50 text-green-700" : exportFeedback.type === "error" ? "border-red-200 bg-red-50 text-red-700" : "border-indigo-200 bg-indigo-50 text-indigo-700"
             }`}
-          >
-            <div className="flex items-center justify-between gap-4">
-              <span>{exportFeedback.message}</span>
+        >
+          <div className="flex items-center justify-between gap-4">
+            <span>{exportFeedback.message}</span>
 
-              {exportFeedback.type !== "loading" && (
-                <button type="button" onClick={() => setExportFeedback(null)}
-                  className="rounded p-1 opacity-60 transition hover:bg-black/5 hover:opacity-100"
-                  aria-label="Dismiss export message"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              )}
-            </div>
+            {exportFeedback.type !== "loading" && (
+              <button type="button" onClick={() => setExportFeedback(null)}
+                className="rounded p-1 opacity-60 transition hover:bg-black/5 hover:opacity-100"
+                aria-label="Dismiss export message"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
           </div>
-        )}
+        </div>
+      )}
 
       {/* Main content */}
       <div className="flex flex-1 overflow-hidden">
@@ -2434,6 +2700,10 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
                 annotationClass.name === "Custom Label" && selectedCustomLabel
                   ? selectedCustomLabel.name
                   : null;
+              const miscellaneousSummary =
+                annotationClass.name === "Miscellaneous" && selectedMiscellaneousLabel
+                  ? selectedMiscellaneousLabel.name
+                  : null;
 
               return (
                 <button
@@ -2458,9 +2728,9 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
                     <span>{annotationClass.name}</span>
                   </span>
 
-                  {customSummary && (
+                  {(customSummary || miscellaneousSummary) && (
                     <span className="max-w-[120px] truncate text-xs text-indigo-500">
-                      {customSummary}
+                      {customSummary || miscellaneousSummary}
                     </span>
                   )}
                 </button>
@@ -2507,6 +2777,7 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
             type="button"
             onClick={() => {
               setSelectedClassType("Custom Label");
+              setSelectedMiscellaneousLabel(null);
               openCustomLabelModal("create");
             }}
             className="mb-3 flex w-full items-center justify-between gap-2 rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-sm text-slate-500 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600"
@@ -2543,6 +2814,34 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
                 <button
                   type="button"
                   onClick={() => openCustomLabelModal("create")}
+                  className="flex-shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
+                >
+                  Change
+                </button>
+              </div>
+            </div>
+          )}
+
+          {selectedClassType === "Miscellaneous" && selectedMiscellaneousLabel && (
+            <div
+              className={`mb-4 rounded-lg border px-3 py-2 ${createErrors.label ? "border-red-300 bg-red-50" : "border-slate-200 bg-slate-50"
+                }`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                    Selected predefined sound
+                  </p>
+                  <div className="mt-1 flex items-center gap-2">
+                    <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full bg-orange-500" />
+                    <span className="truncate text-sm font-medium text-slate-700">
+                      {selectedMiscellaneousLabel.name}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setMiscellaneousModalMode("create"); setShowMiscellaneousModal(true); }}
                   className="flex-shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
                 >
                   Change
@@ -2776,12 +3075,12 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
                         return (
                           <tr
                             key={ann.id}
-                            className={`border-t border-slate-100 transition ${exportSelectedAnnotationId === ann.id? "bg-indigo-50": "bg-white hover:bg-slate-50"}`}
+                            className={`border-t border-slate-100 transition ${exportSelectedAnnotationId === ann.id ? "bg-indigo-50" : "bg-white hover:bg-slate-50"}`}
                           >
                             <td className="px-3 py-2">
                               <input type="radio" name="export-annotation" checked={exportSelectedAnnotationId === ann.id}
                                 onClick={() => setExportSelectedAnnotationId((prev) => prev === ann.id ? null : ann.id)}
-                                onChange={() => {}}
+                                onChange={() => { }}
                                 aria-label={`Select ${ann.label || "annotation"} for export`}
                                 className="h-4 w-4 cursor-pointer accent-indigo-600"
                               />
@@ -2851,7 +3150,7 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
                 <TimestampInput
                   label="Start Time"
                   value={editStart}
-                  onChange={setEditStart}
+                  onChange={handleEditStartChange}
                   hasError={Boolean(editErrors.start)}
                 />
                 {editErrors.start && <p className="text-xs text-red-500">{editErrors.start}</p>}
@@ -2859,59 +3158,190 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
                 <TimestampInput
                   label="End Time"
                   value={editEnd}
-                  onChange={setEditEnd}
+                  onChange={handleEditEndChange}
                   hasError={Boolean(editErrors.end)}
                 />
                 {editErrors.end && <p className="text-xs text-red-500">{editErrors.end}</p>}
 
                 <div>
-                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">
-                    Label *
+                  <label className="mb-2 block text-sm font-semibold text-slate-700">
+                    Annotation Class
                   </label>
 
-                  <select
-                    value={
-                      editAnnotationClass?.type === "custom"
-                        ? editAnnotationClass.id
-                        : editLabel
-                    }
-                    onChange={(e) => handleEditLabelChange(e.target.value)}
-                    className={`w-full rounded-lg border bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-indigo-300 ${editErrors.label ? "border-red-400" : "border-slate-200"
-                      }`}
+                  <div className="mb-2 flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5 focus-within:ring-2 focus-within:ring-indigo-200">
+                    <Search className="h-4 w-4 flex-shrink-0 text-slate-400" />
+                    <input
+                      value={editClassSearch}
+                      onChange={(e) => setEditClassSearch(e.target.value)}
+                      placeholder="Search or select label"
+                      className="w-full text-sm outline-none"
+                    />
+                    {editClassSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setEditClassSearch("")}
+                        className="rounded p-0.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                        aria-label="Clear edit label search"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="mb-2 flex flex-col gap-1">
+                    {filteredEditDefaultClasses.map((annotationClass) => {
+                      const isCustom = editAnnotationClass?.type === "custom";
+                      const isMisc = editAnnotationClass?.type === "miscellaneous";
+                      const isSelected =
+                        annotationClass.name === "Custom Label"
+                          ? isCustom
+                          : annotationClass.name === "Miscellaneous"
+                            ? isMisc
+                            : !isCustom && !isMisc && editLabel === annotationClass.name;
+
+                      const summary =
+                        annotationClass.name === "Custom Label" && isCustom
+                          ? editLabel
+                          : annotationClass.name === "Miscellaneous" && isMisc
+                            ? editLabel
+                            : null;
+
+                      return (
+                        <button
+                          key={annotationClass.name}
+                          type="button"
+                          onClick={() => handleEditSelectClassType(annotationClass.name)}
+                          className={`flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm transition ${isSelected
+                            ? "bg-indigo-50 text-indigo-700"
+                            : "text-slate-700 hover:bg-slate-50"
+                            }`}
+                        >
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span
+                              className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                              style={{
+                                backgroundColor:
+                                  annotationClass.name === "Custom Label" && isCustom
+                                    ? editAnnotationClass?.color || annotationClass.color
+                                    : annotationClass.color,
+                              }}
+                            />
+                            <span>{annotationClass.name}</span>
+                          </span>
+                          {summary && (
+                            <span className="max-w-[120px] truncate text-xs text-indigo-500">
+                              {summary}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+
+                    {filteredEditCustomLabels.map((label) => {
+                      const isSelected =
+                        editAnnotationClass?.type === "custom" &&
+                        editAnnotationClass?.id === label.id;
+
+                      return (
+                        <button
+                          key={label.id}
+                          type="button"
+                          onClick={() => handleEditSelectCustomLabel(label)}
+                          className={`flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm transition ${isSelected
+                            ? "bg-indigo-50 text-indigo-700"
+                            : "text-slate-700 hover:bg-slate-50"
+                            }`}
+                        >
+                          <span className="flex min-w-0 items-center gap-2">
+                            <span
+                              className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                              style={{ backgroundColor: label.color || "#3b82f6" }}
+                            />
+                            <span className="truncate">{label.name}</span>
+                          </span>
+                          <span className="text-[10px] uppercase tracking-wide text-slate-400">
+                            Custom
+                          </span>
+                        </button>
+                      );
+                    })}
+
+                    {normalizedEditClassSearch &&
+                      filteredEditDefaultClasses.length === 0 &&
+                      filteredEditCustomLabels.length === 0 && (
+                        <p className="px-2 py-2 text-xs text-slate-400">No matching labels.</p>
+                      )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => openCustomLabelModal("edit")}
+                    className="mb-3 flex w-full items-center justify-between gap-2 rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-sm text-slate-500 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600"
                   >
-                    <option value="Default Label">Default Label</option>
+                    <span className="flex items-center gap-2">
+                      <Plus className="h-4 w-4" />
+                      Create New Label
+                    </span>
+                    <span className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white">
+                      <Plus className="h-4 w-4" />
+                    </span>
+                  </button>
 
-                    {customLabels.map((label) => (
-                      <option key={label.id} value={label.id}>
-                        {label.name}
-                      </option>
-                    ))}
-
-                    <option value="Miscellaneous">Miscellaneous</option>
-                    <option value="__custom__">+ Create New Label…</option>
-                  </select>
-
-                  {editAnnotationClass && (
-                    <div className="mt-2 flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-                      <span
-                        className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
-                        style={{
-                          backgroundColor: editAnnotationClass.color || "#94a3b8",
-                        }}
-                      />
-                      <span className="min-w-0 flex-1 truncate text-sm text-slate-600">
-                        {editLabel}
-                      </span>
-
-                      {editAnnotationClass.type === "custom" && (
+                  {editAnnotationClass?.type === "custom" && (
+                    <div className={`mb-3 rounded-lg border px-3 py-2 ${editErrors.label ? "border-red-300 bg-red-50" : "border-slate-200 bg-slate-50"
+                      }`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                            Selected custom label
+                          </p>
+                          <div className="mt-1 flex items-center gap-2">
+                            <span
+                              className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                              style={{ backgroundColor: editAnnotationClass.color || "#3b82f6" }}
+                            />
+                            <span className="truncate text-sm font-medium text-slate-700">
+                              {editLabel}
+                            </span>
+                          </div>
+                        </div>
                         <button
                           type="button"
                           onClick={() => openCustomLabelModal("edit")}
-                          className="flex-shrink-0 text-xs font-medium text-indigo-600 hover:text-indigo-700"
+                          className="flex-shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
                         >
                           Change
                         </button>
-                      )}
+                      </div>
+                    </div>
+                  )}
+
+                  {editAnnotationClass?.type === "miscellaneous" && (
+                    <div className={`mb-3 rounded-lg border px-3 py-2 ${editErrors.label ? "border-red-300 bg-red-50" : "border-slate-200 bg-slate-50"
+                      }`}>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                            Selected predefined sound
+                          </p>
+                          <div className="mt-1 flex items-center gap-2">
+                            <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full bg-orange-500" />
+                            <span className="truncate text-sm font-medium text-slate-700">
+                              {editLabel}
+                            </span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMiscellaneousModalMode("edit");
+                            setShowMiscellaneousModal(true);
+                          }}
+                          className="flex-shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
+                        >
+                          Change
+                        </button>
+                      </div>
                     </div>
                   )}
 
@@ -2956,6 +3386,13 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
       </div>
 
       {/* Custom label selection / creation modal */}
+      {showMiscellaneousModal && (
+        <MiscellaneousLabelModal
+          onSelect={handleSelectMiscellaneousLabel}
+          onClose={() => setShowMiscellaneousModal(false)}
+        />
+      )}
+
       {showCustomLabelModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/20 px-4 backdrop-blur-sm">
           <div
@@ -2974,7 +3411,7 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
                 <p className="mt-1 text-sm text-slate-500">
                   {customLabelModalMode === "edit"
                     ? "Select an existing custom label or create a new one for this annotation."
-                    : "Search existing project labels or create a new one."}
+                    : "Search your existing labels or create a new one."}
                 </p>
               </div>
               <button
@@ -3095,7 +3532,7 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
                 <p className="mt-1 text-xs text-red-500">{customLabelError}</p>
               )}
               <p className="mt-2 text-xs text-slate-400">
-                Custom labels are saved to this project and can be reused for future annotations.
+                Custom labels are saved to your account and can be reused across your projects.
               </p>
             </div>
           </div>
