@@ -33,7 +33,8 @@ export default function EditProjectModal({ isOpen, onClose, project, onSave, loa
       return;
     }
 
-    await onSave(formData);
+    const saveError = await onSave(formData);
+    if (saveError) setError(saveError);
   };
 
   if (!isOpen) return null;

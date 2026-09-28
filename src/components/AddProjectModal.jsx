@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { X, Plus, Upload, AlertCircle } from "lucide-react";
 import { auth, db, storage } from "../services/firebase";
-import { collection, addDoc, serverTimestamp, doc, getDoc } from "firebase/firestore";
+import { collection, addDoc, serverTimestamp, doc, getDoc, getDocs } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 const SUPPORTED_AUDIO_EXTENSIONS = ["wav", "mp3", "flac", "ogg", "webm", "m4a"];
@@ -184,6 +184,19 @@ export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
         return;
       }
 
+      const projectsRef = collection(db, "users", user.uid, "projects");
+      const existingProjects = await getDocs(projectsRef);
+      const normalizedTitle = formData.project_title.trim().toLowerCase();
+      const titleExists = existingProjects.docs.some(
+        (projectDoc) =>
+          (projectDoc.data().project_title || "").trim().toLowerCase() === normalizedTitle
+      );
+
+      if (titleExists) {
+        setError("A project with this title already exists");
+        return;
+      }
+
       const fileName = `${user.uid}/${formData.project_title.replace(
         /\s+/g,
         "_"
@@ -201,8 +214,6 @@ export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
         file_duration: formData.audioDuration || null,
         original_file_name: formData.audioFile.name,
       };
-
-      const projectsRef = collection(db, "users", user.uid, "projects");
 
       await addDoc(projectsRef, {
         project_title: formData.project_title.trim(),

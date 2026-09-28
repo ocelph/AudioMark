@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { Link, useNavigate } from "react-router-dom";
-import { collection, query, orderBy, onSnapshot, updateDoc, deleteDoc, doc, getDoc, setDoc } from "firebase/firestore";
+import { collection, query, orderBy, onSnapshot, updateDoc, deleteDoc, doc, getDoc, getDocs, setDoc } from "firebase/firestore";
 import { deleteObject, ref } from "firebase/storage";
 import { FileText, LogOut, Plus, UserCircle } from "lucide-react";
 import { auth, db, storage } from "../services/firebase";
@@ -208,6 +208,17 @@ export default function DashboardPage() {
     setActionLoading(true);
 
     try {
+      const projectsRef = collection(db, "users", auth.currentUser.uid, "projects");
+      const existingProjects = await getDocs(projectsRef);
+      const normalizedTitle = formData.project_title.trim().toLowerCase();
+      const titleExists = existingProjects.docs.some(
+        (projectDoc) =>
+          projectDoc.id !== selectedProject.id &&
+          (projectDoc.data().project_title || "").trim().toLowerCase() === normalizedTitle
+      );
+
+      if (titleExists) return "A project with this title already exists";
+
       const projectRef = doc(
         db,
         "users",
@@ -222,6 +233,7 @@ export default function DashboardPage() {
       });
       setShowEditModal(false);
       setSelectedProject(null);
+      return null;
     } catch (error) {
       console.error("Error updating project:", error);
       alert("Failed to update project");
