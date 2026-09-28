@@ -11,9 +11,15 @@ const getFileExtension = (fileName) =>
 
 const formatDuration = (seconds) => {
   if (!Number.isFinite(seconds)) return "00:00";
+  const hours = Math.floor(seconds / 3600)
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
-  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  if (hours = 0) {
+    return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
+  }
+  else {
+    return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
+  };
 };
 
 const hasAudioSignature = (bytes) => {
