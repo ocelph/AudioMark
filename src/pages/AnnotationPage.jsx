@@ -24,8 +24,7 @@ const PALETTE = ["#a855f7", "#ec4899", "#14b8a6", "#eab308", "#ef4444", "#06b6d4
 const ZOOM_LEVELS = [1, 1.5, 2, 3, 4, 6, 8];
 
 // Half a millisecond — used for float-safe timestamp comparison so that
-// values that should be equal (but differ by binary-representation noise)
-// are treated as the same.
+// values that should be equal (but differ by binary-representation noise) are treated as the same.
 const TIME_EPSILON = 0.0005;
 const isSameTime = (a, b) => Math.abs(Number(a) - Number(b)) < TIME_EPSILON;
 
@@ -169,7 +168,7 @@ const findOverlap = (annotations, start, end, excludeId) =>
 
 
 // ------------------ DOWNLOAD FEATURE ------------------
-// ---------- Download audio segment ---------
+// --------------- Download audio segment ---------------
 // Load and decode the original recording
 const sanitizeFilePart = (value) => {
   const cleaned = String(value || "")
@@ -426,8 +425,7 @@ const verifyGeneratedWav = async (
     throw new Error("No audio file was generated.");
   }
 
-  // A PCM WAV requires at least the 44-byte header
-  // plus actual audio data.
+  // A PCM WAV requires at least the 44-byte header plus actual audio data.
   if (blob.size <= 44) {
     throw new Error(
       "The generated audio file is empty."
@@ -444,8 +442,7 @@ const verifyGeneratedWav = async (
       ...bytes.slice(start, start + length)
     );
 
-  // WAV must contain RIFF at bytes 0-3
-  // and WAVE at bytes 8-11.
+  // WAV must contain RIFF at bytes 0-3 and WAVE at bytes 8-11.
   if (
     readText(0, 4) !== "RIFF" ||
     readText(8, 4) !== "WAVE"
@@ -509,7 +506,7 @@ const verifyGeneratedWav = async (
   }
 };
 
-// broswer download function
+// Broswer download function
 const downloadBlob = (blob, filename) => {
   const objectUrl =
     URL.createObjectURL(blob);
@@ -568,7 +565,7 @@ const buildAnnotationExportRecord = (annotation) => {
 };
 
 
-// comments may contain commas, "quotes" or line breaks
+// Comments may contain commas, "quotes" or line breaks
 const escapeCsvValue = (value) => {
   if (value === null || value === undefined) return "";
 
@@ -598,7 +595,7 @@ const buildAnnotationCsv = (record) => {
   return `${headers.join(",")}\r\n${values.join(",")}`;
 };
 
-// validate the one generated annotation export
+// Validate the one generated annotation export
 const verifyAnnotationExport = (content, format) => {
   if (typeof content !== "string" || content.trim().length === 0) {
     throw new Error("The generated annotation export is empty.");
@@ -712,7 +709,7 @@ const buildAllAnnotationsCsv = (records) => {
   return `${headers.join(",")}\r\n${rows.join("\r\n")}`;
 };
 
-// validate all the generated annotation export
+// Validate all the generated annotation export
 const verifyAllAnnotationsExport = (content, format, expectedCount) => {
   if (typeof content !== "string" || content.trim().length === 0) {
     throw new Error("The generated annotations export is empty.");
@@ -772,9 +769,6 @@ const verifyAllAnnotationsExport = (content, format, expectedCount) => {
 
   throw new Error("Unsupported annotation export format.");
 };
-
-
-
 
 export default function AnnotationPage() {
   const { ownerId, projectId } = useParams();
@@ -1875,10 +1869,10 @@ export default function AnnotationPage() {
     )
     : [];
 
-  // determine which annotation is selected for download
+  // Determine which annotation is selected for download
   const exportSelectedAnnotation = annotations.find((annotation) => annotation.id === exportSelectedAnnotationId) || null;
 
-  // close the dropdown if user clicks elsewhere or presses escape
+  // Close the dropdown if user clicks elsewhere or presses escape
   useEffect(() => {
     if (!showDownloadMenu) return;
 
@@ -1912,7 +1906,7 @@ export default function AnnotationPage() {
   }, [showDownloadMenu]);
 
 
-  // clear export selection if the annotation is deleted (because of real time Firestore storage)
+  // Clear export selection if the annotation is deleted (because of real time Firestore storage)
   useEffect(() => {
     if (!exportSelectedAnnotationId) return;
 
@@ -1926,7 +1920,7 @@ export default function AnnotationPage() {
     }
   }, [annotations, exportSelectedAnnotationId,]);
 
-  // actual Download Audio Segment handler
+  // Actual Download Audio Segment handler
   const handleDownloadAudioSegment = async () => {
     if (!exportSelectedAnnotation) {
       setExportFeedback({
@@ -2003,7 +1997,7 @@ export default function AnnotationPage() {
     }
   };
 
-  // actual Download Annotation Segment handler
+  // Actual Download Annotation Segment handler
   const handleDownloadAnnotation = async (format) => {
     if (!exportSelectedAnnotation) {
       setExportFeedback({ type: "error", message: "Select an annotation before exporting annotation data." });
@@ -2075,7 +2069,7 @@ export default function AnnotationPage() {
     }
   };
 
-  // actual Download Annotation & Audio Segment handler
+  // Actual Download Annotation & Audio Segment handler
   const handleDownloadAudioAndAnnotation = async (format) => {
     if (!exportSelectedAnnotation) {
       setExportFeedback({ type: "error", message: "Select an annotation before exporting audio and annotation data." });
@@ -2174,7 +2168,7 @@ export default function AnnotationPage() {
   };
 
 
-  // actual Download All Annotations handler
+  // Actual Download All Annotations handler
   const handleDownloadAllAnnotations = async (format) => {
     if (annotations.length === 0) {
       setExportFeedback({ type: "error", message: "There are no annotations to export." });
@@ -2244,7 +2238,7 @@ export default function AnnotationPage() {
   };
 
 
-  // actual Download All Annotations & Audio segments handler
+  // Actual Download All Annotations & Audio segments handler
   const handleDownloadAllAnnotationsAndAudio = async (format) => {
     if (annotations.length === 0) {
       setExportFeedback({ type: "error", message: "There are no annotations to export." });
