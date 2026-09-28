@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { auth, db } from "../services/firebase";
 import { doc, getDoc, collection, addDoc, updateDoc, deleteDoc, serverTimestamp, onSnapshot, query, orderBy } from "firebase/firestore";
@@ -20,6 +20,12 @@ const PALETTE = ["#a855f7", "#ec4899", "#14b8a6", "#eab308", "#ef4444", "#06b6d4
 // Fixed zoom steps make Zoom In / Zoom Out deterministic.
 // 1 = Fit the entire recording to the available width.
 const ZOOM_LEVELS = [1, 1.5, 2, 3, 4, 6, 8];
+
+// Half a millisecond — used for float-safe timestamp comparison so that
+// values that should be equal (but differ by binary-representation noise)
+// are treated as the same.
+const TIME_EPSILON = 0.0005;
+const isSameTime = (a, b) => Math.abs(Number(a) - Number(b)) < TIME_EPSILON;
 
 const formatTimestamp = (seconds) => {
   const safeSeconds = Number.isFinite(Number(seconds)) ? Math.max(0, Number(seconds)) : 0;
@@ -130,7 +136,9 @@ const getInitials = (nameOrEmail) => {
 
 // Shared validation for both the manual "create" form and the "edit" form.
 // Checks required fields, a valid time range, length limits, and one hard
-// edge case (exact duplicate time range — blocked).
+// edge case (exact duplicate time range — blocked). Duplicate detection uses
+// an epsilon comparison so that float representation noise doesn't cause
+// two identical-looking annotations to slip through as "different".
 const validateAnnotationFields = ({ label, start, end, comment }, { annotations, excludeId }) => {
   const errors = {};
   const trimmedLabel = (label || "").trim();
@@ -145,7 +153,7 @@ const validateAnnotationFields = ({ label, start, end, comment }, { annotations,
 
   if (!errors.start && !errors.end) {
     const duplicate = annotations.some(
-      (a) => a.id !== excludeId && a.startTime === start && a.endTime === end
+      (a) => a.id !== excludeId && isSameTime(a.startTime, start) && isSameTime(a.endTime, end)
     );
     if (duplicate) errors.end = "An annotation with this exact time range already exists";
   }
@@ -204,6 +212,25 @@ export default function AnnotationPage() {
   const syncingRegionRef = useRef(false);
   const editingRegionRef = useRef(false);
 
+  // Guards against React state updates after unmount. Any async WaveSurfer
+  // callback (ready, timeupdate, error, etc.) checks this before calling
+  // setState to avoid the classic "state update on unmounted component" warning.
+  const isMountedRef = useRef(true);
+
+  // Tracks regions we created programmatically (e.g. when opening the edit
+  // panel) so we can skip the "region-created" handler for them. Without this
+  // guard, the handler could double-sync the form and cause visible jitter.
+  const programmaticRegionsRef = useRef(new WeakSet());
+
+  // Holds any pending requestAnimationFrame id for the spectrogram scroll
+  // mirror. Batching per animation frame prevents scroll drift when the user
+  // scrolls the waveform very rapidly.
+  const scrollRafRef = useRef(null);
+
+  // Latest zoom level captured in a ref. The window resize handler needs to
+  // read the current zoom without being re-subscribed every time zoom changes.
+  const zoomLevelRef = useRef(1);
+
   // Annotation class selection.
   // Default and Miscellaneous are built-in classes.
   // Custom labels are stored per user in Firestore and selected through a modal.
@@ -232,6 +259,24 @@ export default function AnnotationPage() {
   const [rightWidth, setRightWidth] = useState(320);
   const resizingRef = useRef(null); // "left" | "right" | null
 
+  // Mount / unmount marker for async setState guards.
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (scrollRafRef.current) {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+    };
+  }, []);
+
+  // Keep the zoom-level ref in sync with state so the window resize handler
+  // reads the freshest value without being re-registered on every zoom.
+  useEffect(() => {
+    zoomLevelRef.current = zoomLevel;
+  }, [zoomLevel]);
+
   // Load project (the project doc doubles as the "file" — one project = one recording)
   useEffect(() => {
     const loadProject = async () => {
@@ -242,6 +287,7 @@ export default function AnnotationPage() {
           return;
         }
         const projectSnap = await getDoc(doc(db, "users", user.uid, "projects", projectId));
+        if (!isMountedRef.current) return;
         if (projectSnap.exists()) {
           const data = projectSnap.data();
           setFileName(data.project_title);
@@ -253,9 +299,9 @@ export default function AnnotationPage() {
         }
       } catch (err) {
         console.error("Error loading project:", err);
-        setError("Failed to load project.");
+        if (isMountedRef.current) setError("Failed to load project.");
       } finally {
-        setLoading(false);
+        if (isMountedRef.current) setLoading(false);
       }
     };
     loadProject();
@@ -269,6 +315,7 @@ export default function AnnotationPage() {
       orderBy("createdAt", "asc")
     );
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (!isMountedRef.current) return;
       const data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
       setAnnotations(data);
     });
@@ -283,12 +330,12 @@ export default function AnnotationPage() {
     const unsubscribe = onSnapshot(
       labelsRef,
       (snapshot) => {
+        if (!isMountedRef.current) return;
         const labels = snapshot.docs
           .map((d) => ({ id: d.id, ...d.data() }))
           .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
 
         setCustomLabels(labels);
-
       },
       (err) => {
         console.error("Failed to load custom labels:", err);
@@ -299,8 +346,8 @@ export default function AnnotationPage() {
   }, [uid]);
 
   // Initialise one shared WaveSurfer instance for both visualisations.
-  // The spectrogram uses the same audio/timeline. 
-  // Region overlays, zoom and scrolling are also mirrored so the two panes behave as one linked view.
+  // The spectrogram uses the same audio/timeline. Region overlays, zoom and
+  // scrolling are also mirrored so the two panes behave as one linked view.
   useEffect(() => {
     if (!audioUrl || !waveformRef.current || !spectrogramRef.current || !uid) return;
 
@@ -338,10 +385,11 @@ export default function AnnotationPage() {
     });
 
     wavesurferRef.current = ws;
-
     regionsRef.current = regions;
 
     const unsubReady = ws.on("ready", (loadedDuration) => {
+      if (!isMountedRef.current) return;
+
       setDuration(loadedDuration);
       setCurrentTime(0);
       setAudioReady(true);
@@ -372,23 +420,32 @@ export default function AnnotationPage() {
     });
 
     const unsubTime = ws.on("timeupdate", (time) => {
+      if (!isMountedRef.current) return;
       setCurrentTime(time);
     });
 
     // Keep track of the visible time window while zooming/scrolling.
+    // The spectrogram scroll mirror is batched per animation frame so that
+    // rapid scrolling on the waveform doesn't cause the spectrogram viewport
+    // to visibly lag or drift.
     const unsubScroll = ws.on("scroll", (visibleStartTime, visibleEndTime) => {
+      if (!isMountedRef.current) return;
+
       setVisibleRange({
         start: Number.isFinite(visibleStartTime) ? visibleStartTime : 0,
         end: Number.isFinite(visibleEndTime) ? visibleEndTime : ws.getDuration(),
       });
 
-      // Mirror WaveSurfer's horizontal scroll position into the spectrogram
-      // viewport. The spectrogram content uses the same pixel-per-second width,
-      // so both views remain horizontally aligned while zoomed.
-      const waveWrapper = ws.getWrapper?.();
-      if (waveWrapper && spectrogramViewportRef.current) {
-        spectrogramViewportRef.current.scrollLeft = waveWrapper.scrollLeft;
-      }
+      if (scrollRafRef.current !== null) return;
+
+      scrollRafRef.current = requestAnimationFrame(() => {
+        scrollRafRef.current = null;
+
+        const waveWrapper = ws.getWrapper?.();
+        if (waveWrapper && spectrogramViewportRef.current) {
+          spectrogramViewportRef.current.scrollLeft = waveWrapper.scrollLeft;
+        }
+      });
     });
 
     const syncFormFromRegion = (region) => {
@@ -413,7 +470,15 @@ export default function AnnotationPage() {
     };
 
     const unsubRegionCreated = regions.on("region-created", (region) => {
-      // New-annotation mode keeps one active selection. 
+      // Regions created programmatically (e.g. when the user opens the edit
+      // panel) are tracked in a WeakSet and skipped here so we don't
+      // double-sync the form or accidentally remove the region we just added.
+      if (programmaticRegionsRef.current.has(region)) {
+        programmaticRegionsRef.current.delete(region);
+        return;
+      }
+
+      // New-annotation mode keeps one active selection.
       // If the user drags a second region, discard the previous temporary selection.
       const previous = activeRegionRef.current;
       if (previous && previous !== region) {
@@ -432,15 +497,21 @@ export default function AnnotationPage() {
       syncFormFromRegion(region);
     });
 
-    const unsubPlay = ws.on("play", () => setIsPlaying(true));
-    const unsubPause = ws.on("pause", () => setIsPlaying(false));
+    const unsubPlay = ws.on("play", () => {
+      if (isMountedRef.current) setIsPlaying(true);
+    });
+    const unsubPause = ws.on("pause", () => {
+      if (isMountedRef.current) setIsPlaying(false);
+    });
     const unsubFinish = ws.on("finish", () => {
+      if (!isMountedRef.current) return;
       setIsPlaying(false);
       setCurrentTime(ws.getDuration());
     });
 
     const unsubError = ws.on("error", (err) => {
       console.error("WaveSurfer failed to load audio:", err);
+      if (!isMountedRef.current) return;
       setAudioReady(false);
       setWaveformError("Unable to load this audio file. The file may be corrupted or use an unsupported audio format or codec.");
     });
@@ -456,6 +527,12 @@ export default function AnnotationPage() {
       unsubPause?.();
       unsubFinish?.();
       unsubError?.();
+
+      if (scrollRafRef.current !== null) {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+
       activeRegionRef.current = null;
       setActiveSelection(null);
       regionsRef.current = null;
@@ -474,7 +551,10 @@ export default function AnnotationPage() {
     setIsPlaying(false);
   };
 
-  const applyZoomLevel = (level) => {
+  // Applies a zoom level relative to a freshly-measured fit.
+  // Wrapped in useCallback because it's referenced by the window resize
+  // effect below, and we want the effect to see a stable reference.
+  const applyZoomLevel = useCallback((level) => {
     const ws = wavesurferRef.current;
     if (!ws || !audioReady || duration <= 0) return;
 
@@ -484,7 +564,6 @@ export default function AnnotationPage() {
     // Calculate Fit from the OUTER React container, not WaveSurfer's internal wrapper.
     // The internal wrapper/canvas changes width after zooming, which caused:
     // Fit -> 1.5x -> Zoom Out to remain visually zoomed in.
-
     // waveformRef.current is the stable viewport width available on the page.
     const viewportWidth =
       waveformRef.current?.getBoundingClientRect().width ||
@@ -533,7 +612,28 @@ export default function AnnotationPage() {
         spectrogramViewportRef.current.scrollLeft = nextScrollLeft;
       }
     });
-  };
+  }, [audioReady, duration]);
+
+  // Re-apply the current zoom level whenever the browser window is resized.
+  // This keeps "Fit" (1x) genuinely fitting the current viewport width
+  // instead of leaving stale pixels-per-second values from an earlier size.
+  useEffect(() => {
+    if (!audioReady || duration <= 0) return;
+
+    let debounceId = null;
+    const handleResize = () => {
+      if (debounceId) clearTimeout(debounceId);
+      debounceId = setTimeout(() => {
+        applyZoomLevel(zoomLevelRef.current);
+      }, 150);
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => {
+      if (debounceId) clearTimeout(debounceId);
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [audioReady, duration, applyZoomLevel]);
 
   const handleZoomIn = () => {
     const currentIndex = ZOOM_LEVELS.indexOf(zoomLevel);
@@ -577,8 +677,17 @@ export default function AnnotationPage() {
     if (end <= start) return;
 
     syncingRegionRef.current = true;
-    region.setOptions({ start, end });
-    syncingRegionRef.current = false;
+    try {
+      region.setOptions({ start, end });
+    } finally {
+      // Use a microtask to release the guard AFTER any synchronous
+      // region-updated event has finished, and also on the next tick to
+      // cover async firings — whichever happens, we won't feed our own
+      // programmatic update back into the form.
+      Promise.resolve().then(() => {
+        syncingRegionRef.current = false;
+      });
+    }
 
     setActiveSelection({
       start: Number(start.toFixed(3)),
@@ -793,6 +902,8 @@ export default function AnnotationPage() {
         createdAt: serverTimestamp(),
       });
 
+      if (!isMountedRef.current) return;
+
       // Select immediately; the real-time listener will populate the full list.
       const createdLabel = { id: docRef.id, name: trimmed, color };
 
@@ -821,9 +932,9 @@ export default function AnnotationPage() {
       setNewLabelName("");
     } catch (err) {
       console.error("Failed to create custom label:", err);
-      setCustomLabelError("Failed to create the label. Please try again.");
+      if (isMountedRef.current) setCustomLabelError("Failed to create the label. Please try again.");
     } finally {
-      setIsCreatingLabel(false);
+      if (isMountedRef.current) setIsCreatingLabel(false);
     }
   };
 
@@ -868,6 +979,8 @@ export default function AnnotationPage() {
         comment: createComment.trim(),
         createdAt: serverTimestamp(),
       });
+
+      if (!isMountedRef.current) return;
 
       setCreateStart(0);
       setCreateEnd(0);
@@ -920,13 +1033,23 @@ export default function AnnotationPage() {
       resize: true,
     });
 
+    // Mark this region as programmatic so the "region-created" handler
+    // ignores it. The WeakSet drops the reference automatically when the
+    // region is removed, so we don't need to clean it up manually.
+    programmaticRegionsRef.current.add(region);
+
     activeRegionRef.current = region;
     setActiveSelection({
       start: Number(start.toFixed(3)),
       end: Number(end.toFixed(3)),
     });
 
-    syncingRegionRef.current = false;
+    // Release the sync guard on the next microtask so any synchronous
+    // region-updated fired by addRegion has finished first.
+    Promise.resolve().then(() => {
+      syncingRegionRef.current = false;
+    });
+
     ws.setTime(start);
   };
 
@@ -1018,6 +1141,9 @@ export default function AnnotationPage() {
         endTime: end,
         comment: editComment.trim(),
       });
+
+      if (!isMountedRef.current) return;
+
       activeRegionRef.current?.remove();
       activeRegionRef.current = null;
       editingRegionRef.current = false;
@@ -1063,6 +1189,7 @@ export default function AnnotationPage() {
   const handleConfirmDelete = async () => {
     try {
       await deleteDoc(doc(db, "users", uid, "projects", projectId, "annotations", annotationToDelete.id));
+      if (!isMountedRef.current) return;
       if (selectedAnnotation?.id === annotationToDelete.id) {
         setSelectedAnnotation(null);
         setIsEditing(false);
@@ -1693,8 +1820,8 @@ export default function AnnotationPage() {
                           type="button"
                           onClick={() => handleEditSelectClassType(annotationClass.name)}
                           className={`flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm transition ${isSelected
-                              ? "bg-indigo-50 text-indigo-700"
-                              : "text-slate-700 hover:bg-slate-50"
+                            ? "bg-indigo-50 text-indigo-700"
+                            : "text-slate-700 hover:bg-slate-50"
                             }`}
                         >
                           <span className="flex min-w-0 items-center gap-2">
@@ -1729,8 +1856,8 @@ export default function AnnotationPage() {
                           type="button"
                           onClick={() => handleEditSelectCustomLabel(label)}
                           className={`flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm transition ${isSelected
-                              ? "bg-indigo-50 text-indigo-700"
-                              : "text-slate-700 hover:bg-slate-50"
+                            ? "bg-indigo-50 text-indigo-700"
+                            : "text-slate-700 hover:bg-slate-50"
                             }`}
                         >
                           <span className="flex min-w-0 items-center gap-2">
