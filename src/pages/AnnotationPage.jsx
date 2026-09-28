@@ -781,6 +781,8 @@ export default function AnnotationPage() {
   const navigate = useNavigate();
 
   const [currentUserId, setCurrentUserId] = useState(null);
+  const [currentUserName, setCurrentUserName] = useState("");
+  const [currentUserEmail, setCurrentUserEmail] = useState("");
   const [userInitials, setUserInitials] = useState("U");
   const [audioUrl, setAudioUrl] = useState(null);
   const [fileName, setFileName] = useState("");
@@ -910,14 +912,29 @@ export default function AnnotationPage() {
           navigate("/login");
           return;
         }
-        const projectSnap = await getDoc(doc(db, "users", ownerId, "projects", projectId));
+        const [projectSnap, currentUserSnap] = await Promise.all([
+          getDoc(doc(db, "users", ownerId, "projects", projectId)),
+          getDoc(doc(db, "users", user.uid)),
+        ]);
         if (!isMountedRef.current) return;
+
+        const currentUserProfile = currentUserSnap.exists() ? currentUserSnap.data() : {};
+        const profileName = [currentUserProfile.firstName, currentUserProfile.lastName]
+          .filter(Boolean)
+          .join(" ")
+          .trim();
+        const resolvedUserName =
+          profileName || user.displayName || user.email?.split("@")[0] || "Unknown User";
+
+        setCurrentUserId(user.uid);
+        setCurrentUserName(resolvedUserName);
+        setCurrentUserEmail(user.email || currentUserProfile.email || "");
+        setUserInitials(getInitials(resolvedUserName || user.email));
+
         if (projectSnap.exists()) {
           const data = projectSnap.data();
           setFileName(data.project_title);
           setAudioUrl(data.download_url);
-          setCurrentUserId(user.uid);
-          setUserInitials(getInitials(user.displayName || user.email));
         } else {
           setError("Project not found.");
         }
@@ -931,9 +948,10 @@ export default function AnnotationPage() {
     loadProject();
   }, [ownerId, projectId, navigate]);
 
-  // Load project annotations in real time from the project owner path.
+  // Load project annotations in real time using the project owner path.
   useEffect(() => {
     if (!ownerId) return;
+
     const q = query(
       collection(db, "users", ownerId, "projects", projectId, "annotations"),
       orderBy("createdAt", "asc")
@@ -1566,7 +1584,7 @@ export default function AnnotationPage() {
   };
 
   const handleCreateAnnotation = async () => {
-    if (!ownerId || !currentUserId) return;
+    if (!currentUserId) return;
 
     const start = parseFloat(createStart);
     const end = parseFloat(createEnd);
@@ -1604,7 +1622,12 @@ export default function AnnotationPage() {
         label,
         annotationClass,
         comment: createComment.trim(),
+        authorId: currentUserId,
+        authorName: currentUserName,
+        authorEmail: currentUserEmail,
         createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        updatedById: currentUserId,
       });
 
       if (!isMountedRef.current) return;
@@ -1767,6 +1790,8 @@ export default function AnnotationPage() {
         startTime: start,
         endTime: end,
         comment: editComment.trim(),
+        updatedAt: serverTimestamp(),
+        updatedById: currentUserId,
       });
 
       if (!isMountedRef.current) return;
