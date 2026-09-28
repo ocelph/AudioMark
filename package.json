@@ -16,6 +16,7 @@
     "firebase-admin": "^14.2.0",
     "firebase-functions": "^7.3.2",
     "firebase-tools": "^15.27.0",
+    "jszip": "^3.10.2",
     "lucide-react": "^1.31.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

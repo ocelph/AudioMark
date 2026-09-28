@@ -4,7 +4,7 @@ import backgroundImage from "../assets/login_page_background.png";
 import { Link } from "react-router-dom";
 import Logo from '../components/Logo';
 import { createUserWithEmailAndPassword } from "firebase/auth";
-import { doc, setDoc } from "firebase/firestore";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db } from "../services/firebase";
 import { getFunctions, httpsCallable } from "firebase/functions";
 
@@ -77,6 +77,9 @@ export default function RegisterPage() {
     setErrors({});
 
     try {
+      // console.log("1. Starting registration");
+      // const registrationStart = performance.now();
+
       const functions = getFunctions();
       const registerUser = httpsCallable(functions, "registerUser");
 
@@ -86,30 +89,24 @@ export default function RegisterPage() {
         email: form.email,
         password: form.password,
       })
-      // // Creates the Auth account. Throws auth/email-already-in-use automatically if that email is already registered.
-      // const userCredential = await createUserWithEmailAndPassword(
-      //   auth,
-      //   form.email,
-      //   form.password
-      // );
 
       const uid = result.data.uid;
 
-      // // Use the Auth UID as the Firestore document ID, so each user's document has same unique ID.
-      // await setDoc(doc(db, "users", uid), {
-      //   firstName: form.firstName,
-      //   lastName: form.lastName,
-      //   email: form.email,
-      //   createdAt: new Date().toISOString(),
-      // });
+      // console.log("2. Firestore user document created");
+      // console.log( "Registration request took:",
+      //   ((performance.now() - registrationStart) / 1000).toFixed(2),
+      //   "seconds"
+      // );
 
       sentRequest(true);
-      console.log("Request sent for new user:", uid);
+      // console.log("Request sent for new user:", uid);
       sentRequest(true);
 
     } catch (err) {
+          console.error("Registration error:", err);
+
       if (err.code === "auth/email-already-in-use") {
-        setErrors({ email: "Email already in use" });
+        setErrors({ email: "Email already in use." });
       } else if (err.code === "auth/invalid-email") {
         setErrors({ email: "Enter a valid email address." });
       } else if (err.code === "auth/weak-password") {
@@ -117,9 +114,10 @@ export default function RegisterPage() {
       } else if (err.code === "auth/too-many-requests") {
         setErrors({ general: "Unusual sign-up activity detected. Please try again later" })
       } else {
-        setErrors({ general: "Something went wrong. Please try again." });
+        setErrors({ general: "Something went wrong. Please try again."});
       }
-      setSubmitting(false); // button revert back to "Create account" so the user can retry
+    } finally {
+      setSubmitting(false);
     }
   };
 

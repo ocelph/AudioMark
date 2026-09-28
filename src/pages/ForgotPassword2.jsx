@@ -5,7 +5,7 @@ import Logo from '../components/Logo';
 
 export default function ForgotPassword2() {
   useEffect(() => {
-    document.title = "AudioMark — Test";
+    document.title = "AudioMark — Forgot Password Success";
   }, []);
 
 

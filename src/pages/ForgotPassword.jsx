@@ -16,7 +16,7 @@ export default function ForgotPassword() {
     const [submitting, setSubmitting] = useState(false);  
 
     useEffect(() => {
-        document.title = "AudioMark — Forgot Passsword";
+        document.title = "AudioMark — Forgot Password";
     }, []);
 
     const handleChange = (e) => {
@@ -40,9 +40,22 @@ export default function ForgotPassword() {
         setErrors({});
 
         try {
-            await sendPasswordResetEmail(auth, form.email);
+            const email = form.email.trim().toLowerCase();
+
+            // console.log("1. Sending password reset email to:", email);
+            // const start = performance.now();
+
+            await sendPasswordResetEmail(auth, email);
+            
+            // console.log(
+            //     "2. Password reset request completed in",
+            //     ((performance.now() - start) / 1000).toFixed(2),
+            //     "seconds"
+            // );
+
             navigate("/forgotpassword2");
         } catch (err) {
+            console.error("Password reset error:", err);
             console.log("ERROR CODE:", err.code);
             console.log("ERROR MESSAGE:", err.message);
             setErrors({ email: "Please enter a valid email address"});
