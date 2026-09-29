@@ -135,6 +135,14 @@ const getInitials = (nameOrEmail) => {
   return base.slice(0, 2).toUpperCase();
 };
 
+const getAnnotationAuthorInitials = (annotation) => {
+  return getInitials(
+    annotation.authorName ||
+    annotation.authorEmail ||
+    "Unknown"
+  );
+};
+
 // Shared validation for both the manual "create" form and the "edit" form.
 // Checks required fields, a valid time range, length limits, and one hard
 // edge case (exact duplicate time range — blocked). Duplicate detection uses
@@ -3132,8 +3140,11 @@ export default function AnnotationPage() {
                               </span>
                             </td>
                             <td className="px-3 py-2">
-                              <div className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-100 text-[10px] font-semibold text-indigo-700">
-                                {userInitials}
+                              <div
+                                className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-100 text-[10px] font-semibold text-indigo-700"
+                                title={ann.authorName || ann.authorEmail || "Unknown author"}
+                              >
+                                {getAnnotationAuthorInitials(ann)}
                               </div>
                             </td>
                             <td className="max-w-[220px] truncate px-3 py-2 text-slate-500">{ann.comment}</td>
