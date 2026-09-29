@@ -143,6 +143,18 @@ const getAnnotationAuthorInitials = (annotation) => {
   );
 };
 
+
+const authorColorPalette = [
+  "bg-blue-100 text-blue-700 ring-blue-300",
+  "bg-purple-100 text-purple-700 ring-purple-300",
+  "bg-emerald-100 text-emerald-700 ring-emerald-300",
+  "bg-amber-100 text-amber-700 ring-amber-300",
+  "bg-pink-100 text-pink-700 ring-pink-300",
+  "bg-cyan-100 text-cyan-700 ring-cyan-300",
+  "bg-rose-100 text-rose-700 ring-rose-300",
+  "bg-violet-100 text-violet-700 ring-violet-300",
+];
+
 // Shared validation for both the manual "create" form and the "edit" form.
 // Checks required fields, a valid time range, length limits, and one hard
 // edge case (exact duplicate time range — blocked). Duplicate detection uses
@@ -826,6 +838,27 @@ export default function AnnotationPage() {
   const activeRegionRef = useRef(null);
   const syncingRegionRef = useRef(false);
   const editingRegionRef = useRef(false);
+  const authorColorMapRef = useRef(new Map());
+  const availableAuthorColorsRef = useRef([]);
+
+  const getAuthorColor = (authorId) => {
+    if (!authorId) {
+      return "bg-slate-100 text-slate-500 ring-slate-300";
+    }
+
+    if (authorColorMapRef.current.has(authorId)) {
+      return authorColorMapRef.current.get(authorId);
+    }
+
+    if (availableAuthorColorsRef.current.length === 0) {
+      availableAuthorColorsRef.current = [...authorColorPalette]
+        .sort(() => Math.random() - 0.5);
+    }
+
+    const color = availableAuthorColorsRef.current.shift();
+    authorColorMapRef.current.set(authorId, color);
+    return color;
+  };
 
   // Guards against React state updates after unmount. Any async WaveSurfer
   // callback (ready, timeupdate, error, etc.) checks this before calling
@@ -3101,7 +3134,7 @@ export default function AnnotationPage() {
                       <th className="px-3 py-2">Start Time</th>
                       <th className="px-3 py-2">End Time</th>
                       <th className="px-3 py-2">Label</th>
-                      <th className="px-3 py-2">User</th>
+                      <th className="px-3 py-2">Author</th>
                       <th className="px-3 py-2">Comments</th>
                       <th className="px-3 py-2">Actions</th>
                     </tr>
@@ -3118,6 +3151,11 @@ export default function AnnotationPage() {
                       })
                       .map((ann) => {
                         const dotColor = ann.annotationClass?.color || "#94a3b8";
+                        const hasAuthor = Boolean(ann.authorId);
+                        const authorStyle = getAuthorColor(ann.authorId);
+                        const authorTitle = hasAuthor
+                          ? ann.authorName || ann.authorEmail || "Unknown author"
+                          : "Unknown author";
                         return (
                           <tr
                             key={ann.id}
@@ -3141,8 +3179,8 @@ export default function AnnotationPage() {
                             </td>
                             <td className="px-3 py-2">
                               <div
-                                className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-100 text-[10px] font-semibold text-indigo-700"
-                                title={ann.authorName || ann.authorEmail || "Unknown author"}
+                                className={`flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-semibold ${authorStyle}`}
+                                title={authorTitle}
                               >
                                 {getAnnotationAuthorInitials(ann)}
                               </div>
