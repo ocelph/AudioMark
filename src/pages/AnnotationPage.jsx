@@ -2465,6 +2465,8 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
           {createErrors.start && <p className="mb-2 text-xs text-red-500">{createErrors.start}</p>}
           {createErrors.end && <p className="mb-2 text-xs text-red-500">{createErrors.end}</p>}
 
+          {canEditProject && (
+            <>
           <h2 className="mb-2 mt-2 text-sm font-semibold text-slate-700">Annotation Class</h2>
 
           <div className="mb-2 flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5 focus-within:ring-2 focus-within:ring-indigo-200">
@@ -2614,28 +2616,38 @@ const handleDownloadAllAnnotationsAndAudio = async (format) => {
           {createErrors.label && (
             <p className="mb-2 text-xs text-red-500">{createErrors.label}</p>
           )}
+            </>
+          )}
 
-          <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
-          <textarea
-            value={createComment}
-            onChange={(e) => setCreateComment(e.target.value)}
-            rows={3}
-            className={`mb-2 w-full rounded-lg border px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${createErrors.comment ? "border-red-400" : "border-slate-200"
-              }`}
-            placeholder="Add a note about this annotation..."
-          />
-          {createErrors.comment && <p className="mb-2 text-xs text-red-500">{createErrors.comment}</p>}
-          {createWarning && <p className="mb-2 text-xs text-amber-600">{createWarning}</p>}
+          {canEditProject && (
+            <>
+              <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
+              <textarea
+                value={createComment}
+                onChange={(e) => setCreateComment(e.target.value)}
+                rows={3}
+                className={`mb-2 w-full rounded-lg border px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${createErrors.comment ? "border-red-400" : "border-slate-200"
+                  }`}
+                placeholder="Add a note about this annotation..."
+              />
+              {createErrors.comment && <p className="mb-2 text-xs text-red-500">{createErrors.comment}</p>}
+              {createWarning && <p className="mb-2 text-xs text-amber-600">{createWarning}</p>}
+            </>
+          )}
 
-          <button
-            onClick={handleCreateAnnotation}
-            className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition"
-          >
-            Save Annotation
-          </button>
-          <p className="mt-2 text-xs text-slate-400">
-            Drag across the waveform to populate the timestamps, then refine them here if needed.
-          </p>
+          {canEditProject && (
+            <button
+              onClick={handleCreateAnnotation}
+              className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition"
+            >
+              Save Annotation
+            </button>
+          )}
+          {canEditProject && (
+            <p className="mt-2 text-xs text-slate-400">
+              Drag across the waveform to populate the timestamps, then refine them here if needed.
+            </p>
+          )}
           </fieldset>
         </div>
 
