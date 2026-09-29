@@ -801,6 +801,8 @@ export default function AnnotationPage() {
   const [userInitials, setUserInitials] = useState("U");
   const [activeCollaborators, setActiveCollaborators] = useState([]);
   const [editLockNotice, setEditLockNotice] = useState("");
+  const [syncStatus, setSyncStatus] = useState("connected");
+  const [syncMessage, setSyncMessage] = useState("");
   const [audioUrl, setAudioUrl] = useState(null);
   const [fileName, setFileName] = useState("");
   const [annotations, setAnnotations] = useState([]);
@@ -844,6 +846,8 @@ export default function AnnotationPage() {
   const activeEditLockRef = useRef(null);
   const authorColorMapRef = useRef(new Map());
   const availableAuthorColorsRef = useRef([]);
+  const hasConnectedOnceRef = useRef(false);
+  const restoreMessageTimeoutRef = useRef(null);
 
   const getAuthorColor = (authorId) => {
     if (!authorId) {
@@ -932,6 +936,10 @@ export default function AnnotationPage() {
         cancelAnimationFrame(scrollRafRef.current);
         scrollRafRef.current = null;
       }
+      if (restoreMessageTimeoutRef.current) {
+        clearTimeout(restoreMessageTimeoutRef.current);
+        restoreMessageTimeoutRef.current = null;
+      }
     };
   }, []);
 
@@ -1016,7 +1024,39 @@ export default function AnnotationPage() {
     });
 
     const unsubscribeConnection = onValue(connectedRef, async (snapshot) => {
-      if (snapshot.val() !== true) return;
+      if (!isMountedRef.current) return;
+
+      const isConnected = snapshot.val() === true;
+
+      if (!isConnected) {
+        if (hasConnectedOnceRef.current) {
+          setSyncStatus("disconnected");
+          setSyncMessage(
+            "Connection lost — real-time updates are temporarily unavailable. Changes may not be synchronised with collaborators."
+          );
+        }
+        return;
+      }
+
+      if (hasConnectedOnceRef.current) {
+        setSyncStatus("restored");
+        setSyncMessage("Connection restored — real-time collaboration is active again.");
+
+        if (restoreMessageTimeoutRef.current) {
+          clearTimeout(restoreMessageTimeoutRef.current);
+        }
+
+        restoreMessageTimeoutRef.current = setTimeout(() => {
+          if (!isMountedRef.current) return;
+          setSyncStatus("connected");
+          setSyncMessage("");
+          restoreMessageTimeoutRef.current = null;
+        }, 4000);
+      } else {
+        hasConnectedOnceRef.current = true;
+        setSyncStatus("connected");
+        setSyncMessage("");
+      }
 
       try {
         await onDisconnect(currentUserPresenceRef).remove();
@@ -1029,6 +1069,12 @@ export default function AnnotationPage() {
         });
       } catch (error) {
         console.error("Failed to update collaborator presence:", error);
+        if (isMountedRef.current) {
+          setSyncStatus("error");
+          setSyncMessage(
+            "Real-time collaboration could not reconnect completely. Please check your connection and try again."
+          );
+        }
       }
     });
 
@@ -1079,7 +1125,14 @@ export default function AnnotationPage() {
       const data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
       setAnnotations(data);
     },
-      (error) => { console.error("Failed to synchronise annotations:", error); }
+      (error) => {
+        console.error("Failed to synchronise annotations:", error);
+        if (!isMountedRef.current) return;
+        setSyncStatus("error");
+        setSyncMessage(
+          "Annotations could not be synchronised in real time. Please check your connection. Firebase will retry automatically."
+        );
+      }
     );
     return () => unsubscribe();
   }, [ownerId, projectId]);
@@ -2888,6 +2941,34 @@ export default function AnnotationPage() {
               <button type="button" onClick={() => setExportFeedback(null)}
                 className="rounded p-1 opacity-60 transition hover:bg-black/5 hover:opacity-100"
                 aria-label="Dismiss export message"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Real-time collaboration status */}
+      {syncMessage && (
+        <div
+          className={`border-b px-6 py-2 text-sm ${syncStatus === "restored"
+              ? "border-green-200 bg-green-50 text-green-700"
+              : "border-amber-200 bg-amber-50 text-amber-800"
+            }`}
+          role="status"
+        >
+          <div className="flex items-center justify-between gap-4">
+            <span>{syncMessage}</span>
+            {syncStatus !== "disconnected" && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSyncStatus("connected");
+                  setSyncMessage("");
+                }}
+                className="rounded p-1 opacity-60 transition hover:bg-black/5 hover:opacity-100"
+                aria-label="Dismiss synchronisation message"
               >
                 <X className="h-4 w-4" />
               </button>
