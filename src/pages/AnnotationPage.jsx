@@ -800,6 +800,7 @@ export default function AnnotationPage() {
   const [currentUserEmail, setCurrentUserEmail] = useState("");
   const [userInitials, setUserInitials] = useState("U");
   const [activeCollaborators, setActiveCollaborators] = useState([]);
+  const [collaboratorSelections, setCollaboratorSelections] = useState([]);
   const [editLockNotice, setEditLockNotice] = useState("");
   const [syncStatus, setSyncStatus] = useState("connected");
   const [syncMessage, setSyncMessage] = useState("");
@@ -848,6 +849,7 @@ export default function AnnotationPage() {
   const availableAuthorColorsRef = useRef([]);
   const hasConnectedOnceRef = useRef(false);
   const restoreMessageTimeoutRef = useRef(null);
+  const collaboratorSelectionWriteTimeoutRef = useRef(null);
 
   const getAuthorColor = (authorId) => {
     if (!authorId) {
@@ -866,6 +868,24 @@ export default function AnnotationPage() {
     const color = availableAuthorColorsRef.current.shift();
     authorColorMapRef.current.set(authorId, color);
     return color;
+  };
+
+  // Convert the existing collaborator colour assignment into an overlay colour
+  // for live selections. This keeps ADP-115 visually consistent with the
+  // collaborator avatars and annotation-author colours already used on the page.
+  const getCollaboratorOverlayColor = (userId) => {
+    const classes = getAuthorColor(userId);
+
+    if (classes.includes("purple")) return { border: "#c084fc", fill: "rgba(192, 132, 252, 0.18)" };
+    if (classes.includes("emerald")) return { border: "#6ee7b7", fill: "rgba(110, 231, 183, 0.18)" };
+    if (classes.includes("amber")) return { border: "#fcd34d", fill: "rgba(252, 211, 77, 0.18)" };
+    if (classes.includes("pink")) return { border: "#f9a8d4", fill: "rgba(249, 168, 212, 0.18)" };
+    if (classes.includes("cyan")) return { border: "#67e8f9", fill: "rgba(103, 232, 249, 0.18)" };
+    if (classes.includes("rose")) return { border: "#fda4af", fill: "rgba(253, 164, 175, 0.18)" };
+    if (classes.includes("violet")) return { border: "#c4b5fd", fill: "rgba(196, 181, 253, 0.18)" };
+    if (classes.includes("blue")) return { border: "#93c5fd", fill: "rgba(147, 197, 253, 0.18)" };
+
+    return { border: "#cbd5e1", fill: "rgba(203, 213, 225, 0.18)" };
   };
 
   // Guards against React state updates after unmount. Any async WaveSurfer
@@ -939,6 +959,10 @@ export default function AnnotationPage() {
       if (restoreMessageTimeoutRef.current) {
         clearTimeout(restoreMessageTimeoutRef.current);
         restoreMessageTimeoutRef.current = null;
+      }
+      if (collaboratorSelectionWriteTimeoutRef.current) {
+        clearTimeout(collaboratorSelectionWriteTimeoutRef.current);
+        collaboratorSelectionWriteTimeoutRef.current = null;
       }
     };
   }, []);
@@ -1092,6 +1116,119 @@ export default function AnnotationPage() {
     ownerId,
     projectId,
   ]);
+
+  // ADP-115: listen for temporary selections made by other collaborators.
+  // These are presence-like UI hints only; they are never stored as annotations.
+  useEffect(() => {
+    if (!currentUserId || !ownerId || !projectId) return;
+
+    const selectionsRef = databaseRef(
+      realtimeDb,
+      `collaboratorSelections/${ownerId}/${projectId}`
+    );
+
+    const unsubscribe = onValue(selectionsRef, (snapshot) => {
+      if (!isMountedRef.current) return;
+
+      const data = snapshot.val() || {};
+      const selections = Object.entries(data)
+        .map(([userId, value]) => ({ userId, ...value }))
+        .filter((selection) =>
+          selection.userId !== currentUserId &&
+          Number.isFinite(Number(selection.start)) &&
+          Number.isFinite(Number(selection.end)) &&
+          Number(selection.end) > Number(selection.start)
+        );
+
+      setCollaboratorSelections(selections);
+    }, (error) => {
+      console.error("Failed to load collaborator selections:", error);
+    });
+
+    return () => {
+      unsubscribe();
+      setCollaboratorSelections([]);
+    };
+  }, [currentUserId, ownerId, projectId]);
+
+  // ADP-115: publish this user's current selection. A short throttle keeps
+  // dragging responsive without writing to Realtime Database on every pixel.
+  useEffect(() => {
+    if (!currentUserId || !ownerId || !projectId) return;
+
+    const currentSelectionRef = databaseRef(
+      realtimeDb,
+      `collaboratorSelections/${ownerId}/${projectId}/${currentUserId}`
+    );
+
+    onDisconnect(currentSelectionRef).remove().catch((error) => {
+      console.error("Failed to register collaborator selection cleanup:", error);
+    });
+
+    if (collaboratorSelectionWriteTimeoutRef.current) {
+      clearTimeout(collaboratorSelectionWriteTimeoutRef.current);
+    }
+
+    collaboratorSelectionWriteTimeoutRef.current = setTimeout(() => {
+      collaboratorSelectionWriteTimeoutRef.current = null;
+
+      if (
+        activeSelection &&
+        Number.isFinite(Number(activeSelection.start)) &&
+        Number.isFinite(Number(activeSelection.end)) &&
+        Number(activeSelection.end) > Number(activeSelection.start)
+      ) {
+        set(currentSelectionRef, {
+          userId: currentUserId,
+          name: currentUserName || currentUserEmail || "Another collaborator",
+          email: currentUserEmail || "",
+          start: Number(activeSelection.start),
+          end: Number(activeSelection.end),
+          editingAnnotationId: isEditing ? selectedAnnotation?.id || null : null,
+          updatedAt: realtimeServerTimestamp(),
+        }).catch((error) => {
+          console.error("Failed to publish collaborator selection:", error);
+        });
+      } else {
+        remove(currentSelectionRef).catch((error) => {
+          console.error("Failed to clear collaborator selection:", error);
+        });
+      }
+    }, 80);
+
+    return () => {
+      if (collaboratorSelectionWriteTimeoutRef.current) {
+        clearTimeout(collaboratorSelectionWriteTimeoutRef.current);
+        collaboratorSelectionWriteTimeoutRef.current = null;
+      }
+    };
+  }, [
+    activeSelection,
+    currentUserId,
+    currentUserName,
+    currentUserEmail,
+    ownerId,
+    projectId,
+    isEditing,
+    selectedAnnotation?.id,
+    syncStatus,
+  ]);
+
+  // Remove this user's temporary selection when leaving the annotation page.
+  useEffect(() => {
+    return () => {
+      if (!currentUserId || !ownerId || !projectId) return;
+
+      const currentSelectionRef = databaseRef(
+        realtimeDb,
+        `collaboratorSelections/${ownerId}/${projectId}/${currentUserId}`
+      );
+
+      remove(currentSelectionRef).catch((error) => {
+        console.error("Failed to clear collaborator selection on page exit:", error);
+      });
+    };
+  }, [currentUserId, ownerId, projectId]);
 
   // Release any annotation checkout lock when leaving this page.
   // Keep onDisconnect armed while the explicit release is attempted. If the
@@ -2953,8 +3090,8 @@ export default function AnnotationPage() {
       {syncMessage && (
         <div
           className={`border-b px-6 py-2 text-sm ${syncStatus === "restored"
-              ? "border-green-200 bg-green-50 text-green-700"
-              : "border-amber-200 bg-amber-50 text-amber-800"
+            ? "border-green-200 bg-green-50 text-green-700"
+            : "border-amber-200 bg-amber-50 text-amber-800"
             }`}
           role="status"
         >
@@ -3248,6 +3385,48 @@ export default function AnnotationPage() {
 
               <div className="relative">
                 <div ref={waveformRef} className="w-full px-2 py-3" />
+
+                {duration > 0 && collaboratorSelections.map((selection) => {
+                  const start = Math.max(0, Math.min(duration, Number(selection.start)));
+                  const end = Math.max(start, Math.min(duration, Number(selection.end)));
+                  if (end <= start) return null;
+
+                  const viewStart = Math.max(0, Number(visibleRange.start) || 0);
+                  const viewEnd =
+                    Number(visibleRange.end) > viewStart
+                      ? Math.min(duration, Number(visibleRange.end))
+                      : duration;
+                  const viewDuration = Math.max(TIME_EPSILON, viewEnd - viewStart);
+
+                  const clippedStart = Math.max(start, viewStart);
+                  const clippedEnd = Math.min(end, viewEnd);
+                  if (clippedEnd <= clippedStart) return null;
+
+                  const overlayColor = getCollaboratorOverlayColor(selection.userId);
+                  const collaboratorName =
+                    selection.name || selection.email || "Collaborator";
+
+                  return (
+                    <div
+                      key={`waveform-${selection.userId}`}
+                      className="pointer-events-none absolute inset-y-0 z-[15] border-x-2"
+                      style={{
+                        left: `${((clippedStart - viewStart) / viewDuration) * 100}%`,
+                        width: `${((clippedEnd - clippedStart) / viewDuration) * 100}%`,
+                        borderColor: overlayColor.border,
+                        backgroundColor: overlayColor.fill,
+                      }}
+                      aria-label={`${collaboratorName} is editing from ${formatTimestamp(start)} to ${formatTimestamp(end)}`}
+                    >
+                      <div
+                        className="absolute left-1 top-1 max-w-[180px] truncate rounded px-2 py-1 text-[10px] font-semibold text-slate-900 shadow-sm"
+                        style={{ backgroundColor: overlayColor.border }}
+                      >
+                        {collaboratorName} is editing...
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
 
               <div className="border-y border-slate-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-slate-400">
@@ -3279,6 +3458,36 @@ export default function AnnotationPage() {
                       aria-hidden="true"
                     />
                   )}
+
+                  {duration > 0 && collaboratorSelections.map((selection) => {
+                    const start = Math.max(0, Math.min(duration, Number(selection.start)));
+                    const end = Math.max(start, Math.min(duration, Number(selection.end)));
+                    if (end <= start) return null;
+
+                    const overlayColor = getCollaboratorOverlayColor(selection.userId);
+                    const collaboratorName = selection.name || selection.email || "Collaborator";
+
+                    return (
+                      <div
+                        key={selection.userId}
+                        className="pointer-events-none absolute inset-y-0 z-[15] border-x-2"
+                        style={{
+                          left: `${(start / duration) * 100}%`,
+                          width: `${((end - start) / duration) * 100}%`,
+                          borderColor: overlayColor.border,
+                          backgroundColor: overlayColor.fill,
+                        }}
+                        aria-label={`${collaboratorName} is editing from ${formatTimestamp(start)} to ${formatTimestamp(end)}`}
+                      >
+                        <div
+                          className="absolute left-1 top-1 max-w-[180px] truncate rounded px-2 py-1 text-[10px] font-semibold text-slate-900 shadow-sm"
+                          style={{ backgroundColor: overlayColor.border }}
+                        >
+                          {collaboratorName} is editing...
+                        </div>
+                      </div>
+                    );
+                  })}
 
                   {duration > 0 && (
                     <div
