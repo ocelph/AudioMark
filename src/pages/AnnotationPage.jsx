@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { auth, db } from "../services/firebase";
+import { auth, db, realtimeDb } from "../services/firebase";
 import { doc, getDoc, collection, addDoc, updateDoc, deleteDoc, serverTimestamp, onSnapshot, query, orderBy } from "firebase/firestore";
+import { ref as databaseRef, onValue, onDisconnect, set, remove, serverTimestamp as realtimeServerTimestamp } from "firebase/database";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
 import Spectrogram from "wavesurfer.js/dist/plugins/spectrogram.js";
@@ -798,6 +799,7 @@ export default function AnnotationPage() {
   const [currentUserName, setCurrentUserName] = useState("");
   const [currentUserEmail, setCurrentUserEmail] = useState("");
   const [userInitials, setUserInitials] = useState("U");
+  const [activeCollaborators, setActiveCollaborators] = useState([]);
   const [audioUrl, setAudioUrl] = useState(null);
   const [fileName, setFileName] = useState("");
   const [annotations, setAnnotations] = useState([]);
@@ -982,6 +984,66 @@ export default function AnnotationPage() {
     };
     loadProject();
   }, [ownerId, projectId, navigate]);
+
+  // Track users who are currently viewing this annotation project.
+  useEffect(() => {
+    if (!currentUserId || !ownerId || !projectId) return;
+
+    const projectPresenceRef = databaseRef(
+      realtimeDb,
+      `presence/${ownerId}/${projectId}`
+    );
+    const currentUserPresenceRef = databaseRef(
+      realtimeDb,
+      `presence/${ownerId}/${projectId}/${currentUserId}`
+    );
+    const connectedRef = databaseRef(realtimeDb, ".info/connected");
+
+    const unsubscribePresence = onValue(projectPresenceRef, (snapshot) => {
+      if (!isMountedRef.current) return;
+
+      const presenceData = snapshot.val() || {};
+      const users = Object.entries(presenceData)
+        .map(([id, data]) => ({
+          id,
+          ...data,
+        }))
+        .filter((user) => user.online === true);
+
+      setActiveCollaborators(users);
+    });
+
+    const unsubscribeConnection = onValue(connectedRef, async (snapshot) => {
+      if (snapshot.val() !== true) return;
+
+      try {
+        await onDisconnect(currentUserPresenceRef).remove();
+        await set(currentUserPresenceRef, {
+          userId: currentUserId,
+          name: currentUserName || currentUserEmail || "Unknown User",
+          email: currentUserEmail || "",
+          online: true,
+          lastSeen: realtimeServerTimestamp(),
+        });
+      } catch (error) {
+        console.error("Failed to update collaborator presence:", error);
+      }
+    });
+
+    return () => {
+      unsubscribePresence();
+      unsubscribeConnection();
+      remove(currentUserPresenceRef).catch((error) => {
+        console.error("Failed to clear collaborator presence:", error);
+      });
+    };
+  }, [
+    currentUserId,
+    currentUserName,
+    currentUserEmail,
+    ownerId,
+    projectId,
+  ]);
 
   // Load project annotations in real time
   useEffect(() => {
@@ -2444,10 +2506,21 @@ export default function AnnotationPage() {
         </div>
 
         <div className="flex items-center gap-2 text-sm text-slate-500">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-xs font-semibold text-indigo-700">
-            {userInitials}
+          <div className="flex -space-x-2">
+            {activeCollaborators.map((collaborator) => (
+              <div
+                key={collaborator.id}
+                title={collaborator.name || collaborator.email || "Unknown user"}
+                className={`flex h-8 w-8 items-center justify-center rounded-full ring-2 ring-white text-xs font-semibold ${getAuthorColor(collaborator.id)}`}
+              >
+                {getInitials(collaborator.name || collaborator.email)}
+              </div>
+            ))}
           </div>
-          <span>1 collaborator</span>
+          <span>
+            {activeCollaborators.length}{" "}
+            {activeCollaborators.length === 1 ? "collaborator" : "collaborators"}
+          </span>
         </div>
 
         {/* Non-functional placeholders — separate tickets */}
