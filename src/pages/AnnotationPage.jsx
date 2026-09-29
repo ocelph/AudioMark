@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { auth, db, realtimeDb } from "../services/firebase";
 import { doc, getDoc, collection, addDoc, updateDoc, deleteDoc, serverTimestamp, onSnapshot, query, orderBy } from "firebase/firestore";
-import { ref as databaseRef, onValue, onDisconnect, set, remove, serverTimestamp as realtimeServerTimestamp } from "firebase/database";
+import { ref as databaseRef, onValue, onDisconnect, set, remove, runTransaction as runRealtimeTransaction, serverTimestamp as realtimeServerTimestamp } from "firebase/database";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
 import Spectrogram from "wavesurfer.js/dist/plugins/spectrogram.js";
@@ -800,6 +800,7 @@ export default function AnnotationPage() {
   const [currentUserEmail, setCurrentUserEmail] = useState("");
   const [userInitials, setUserInitials] = useState("U");
   const [activeCollaborators, setActiveCollaborators] = useState([]);
+  const [editLockNotice, setEditLockNotice] = useState("");
   const [audioUrl, setAudioUrl] = useState(null);
   const [fileName, setFileName] = useState("");
   const [annotations, setAnnotations] = useState([]);
@@ -840,6 +841,7 @@ export default function AnnotationPage() {
   const activeRegionRef = useRef(null);
   const syncingRegionRef = useRef(false);
   const editingRegionRef = useRef(false);
+  const activeEditLockRef = useRef(null);
   const authorColorMapRef = useRef(new Map());
   const availableAuthorColorsRef = useRef([]);
 
@@ -1044,6 +1046,25 @@ export default function AnnotationPage() {
     ownerId,
     projectId,
   ]);
+
+  // Release any annotation checkout lock when leaving this page.
+  // Keep onDisconnect armed while the explicit release is attempted. If the
+  // page disappears before the transaction completes, Firebase can still
+  // remove the lock when this client disconnects.
+  useEffect(() => {
+    return () => {
+      const lockRef = activeEditLockRef.current;
+      if (!lockRef || !currentUserId) return;
+
+      runRealtimeTransaction(lockRef, (currentLock) => {
+        if (currentLock?.userId === currentUserId) return null;
+        return;
+      }).catch((error) => {
+        console.error("Failed to clear annotation lock on page exit:", error);
+      });
+      activeEditLockRef.current = null;
+    };
+  }, [currentUserId, ownerId, projectId]);
 
   // Load project annotations in real time
   useEffect(() => {
@@ -1819,7 +1840,76 @@ export default function AnnotationPage() {
     ws.setTime(start);
   };
 
-  const handleEditOpen = (annotation) => {
+  const releaseAnnotationLock = async () => {
+    const lockRef = activeEditLockRef.current;
+    if (!lockRef || !currentUserId) return;
+
+    try {
+      const result = await runRealtimeTransaction(lockRef, (currentLock) => {
+        if (!currentLock || currentLock.userId === currentUserId) return null;
+        return;
+      });
+
+      // Only cancel the disconnect cleanup after the explicit release has
+      // completed (or if the lock no longer belongs to this user). This avoids
+      // leaving a permanent lock when the connection drops during cleanup.
+      const remainingLock = result.snapshot.val();
+      if (result.committed || remainingLock?.userId !== currentUserId) {
+        await onDisconnect(lockRef).cancel();
+        activeEditLockRef.current = null;
+      }
+    } catch (error) {
+      // Do not cancel onDisconnect here. It is our fallback cleanup if the
+      // explicit transaction failed because the connection disappeared.
+      console.error("Failed to release annotation lock:", error);
+    }
+  };
+
+  const handleEditOpen = async (annotation) => {
+    if (!currentUserId || !ownerId || !projectId || !annotation?.id) return;
+
+    setEditLockNotice("");
+
+    const lockRef = databaseRef(
+      realtimeDb,
+      `annotationLocks/${ownerId}/${projectId}/${annotation.id}`
+    );
+
+    try {
+      const result = await runRealtimeTransaction(lockRef, (currentLock) => {
+        if (!currentLock || currentLock.userId === currentUserId) {
+          return {
+            userId: currentUserId,
+            name: currentUserName || currentUserEmail || "Another collaborator",
+            email: currentUserEmail || "",
+            annotationId: annotation.id,
+            lockedAt: Date.now(),
+          };
+        }
+
+        return;
+      });
+
+      if (!result.committed) {
+        const existingLock = result.snapshot.val();
+        const editorName =
+          existingLock?.name || existingLock?.email || "Another collaborator";
+        setEditLockNotice(
+          `${editorName} is currently editing this annotation. You can continue working on other annotations.`
+        );
+        return;
+      }
+
+      activeEditLockRef.current = lockRef;
+      await onDisconnect(lockRef).remove();
+    } catch (error) {
+      console.error("Failed to acquire annotation lock:", error);
+      setEditLockNotice(
+        "Unable to reserve this annotation for editing. Please try again."
+      );
+      return;
+    }
+
     setSelectedAnnotation(annotation);
     setEditLabel(annotation.label);
     setEditAnnotationClass(
@@ -1834,6 +1924,7 @@ export default function AnnotationPage() {
     setEditComment(annotation.comment || "");
     setEditErrors({});
     setEditWarning("");
+    setEditLockNotice("");
     setEditClassSearch("");
     editingRegionRef.current = true;
     setIsEditing(true);
@@ -1912,6 +2003,8 @@ export default function AnnotationPage() {
 
       if (!isMountedRef.current) return;
 
+      await releaseAnnotationLock();
+
       activeRegionRef.current?.remove();
       activeRegionRef.current = null;
       editingRegionRef.current = false;
@@ -1933,7 +2026,8 @@ export default function AnnotationPage() {
     setActiveSelection(null);
   };
 
-  const handleCancelEdit = () => {
+  const handleCancelEdit = async () => {
+    await releaseAnnotationLock();
     clearEditRegion();
     setSelectedAnnotation(null);
     setIsEditing(false);
@@ -1941,7 +2035,8 @@ export default function AnnotationPage() {
     setEditWarning("");
   };
 
-  const handleClosePanel = () => {
+  const handleClosePanel = async () => {
+    await releaseAnnotationLock();
     clearEditRegion();
     setSelectedAnnotation(null);
     setIsEditing(false);
@@ -3544,6 +3639,25 @@ export default function AnnotationPage() {
           </>
         )}
       </div>
+
+      {editLockNotice && (
+        <div className="fixed left-1/2 top-5 z-[100] w-[min(92vw,520px)] -translate-x-1/2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 shadow-lg">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-amber-800">Annotation currently in progress</p>
+              <p className="mt-1 text-sm text-amber-700">{editLockNotice}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setEditLockNotice("")}
+              className="rounded-md px-2 py-1 text-sm text-amber-700 hover:bg-amber-100"
+              aria-label="Dismiss annotation lock notice"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Custom label selection / creation modal */}
       {showMiscellaneousModal && (
