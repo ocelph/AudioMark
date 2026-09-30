@@ -171,7 +171,7 @@ const validateAnnotationFields = ({ label, start, end, comment }, { annotations,
   if (!Number.isFinite(start) || start < 0) errors.start = "Start time must be 0 or greater";
   if (!Number.isFinite(end) || end <= start) errors.end = "End time must be greater than start time";
 
-  if (comment && comment.trim().length > 500) errors.comment = "Comment must be under 500 characters";
+  if (comment && comment.trim().length > 2000) errors.comment = "Comment must be under 2000 characters";
 
   if (!errors.start && !errors.end) {
     const duplicate = annotations.some(
@@ -876,16 +876,16 @@ export default function AnnotationPage() {
   const getCollaboratorOverlayColor = (userId) => {
     const classes = getAuthorColor(userId);
 
-    if (classes.includes("purple")) return { border: "#c084fc", fill: "rgba(192, 132, 252, 0.18)" };
-    if (classes.includes("emerald")) return { border: "#6ee7b7", fill: "rgba(110, 231, 183, 0.18)" };
-    if (classes.includes("amber")) return { border: "#fcd34d", fill: "rgba(252, 211, 77, 0.18)" };
-    if (classes.includes("pink")) return { border: "#f9a8d4", fill: "rgba(249, 168, 212, 0.18)" };
-    if (classes.includes("cyan")) return { border: "#67e8f9", fill: "rgba(103, 232, 249, 0.18)" };
-    if (classes.includes("rose")) return { border: "#fda4af", fill: "rgba(253, 164, 175, 0.18)" };
-    if (classes.includes("violet")) return { border: "#c4b5fd", fill: "rgba(196, 181, 253, 0.18)" };
-    if (classes.includes("blue")) return { border: "#93c5fd", fill: "rgba(147, 197, 253, 0.18)" };
+    if (classes.includes("purple")) return { border: "#9333ea", fill: "rgba(147, 51, 234, 0.30)" };
+    if (classes.includes("emerald")) return { border: "#059669", fill: "rgba(5, 150, 105, 0.30)" };
+    if (classes.includes("amber")) return { border: "#d97706", fill: "rgba(217, 119, 6, 0.30)" };
+    if (classes.includes("pink")) return { border: "#db2777", fill: "rgba(219, 39, 119, 0.30)" };
+    if (classes.includes("cyan")) return { border: "#0891b2", fill: "rgba(8, 145, 178, 0.30)" };
+    if (classes.includes("rose")) return { border: "#e11d48", fill: "rgba(225, 29, 72, 0.30)" };
+    if (classes.includes("violet")) return { border: "#7c3aed", fill: "rgba(124, 58, 237, 0.30)" };
+    if (classes.includes("blue")) return { border: "#2563eb", fill: "rgba(37, 99, 235, 0.30)" };
 
-    return { border: "#cbd5e1", fill: "rgba(203, 213, 225, 0.18)" };
+    return { border: "#475569", fill: "rgba(71, 85, 105, 0.30)" };
   };
 
   // Guards against React state updates after unmount. Any async WaveSurfer
@@ -931,7 +931,8 @@ export default function AnnotationPage() {
   const [createWarning, setCreateWarning] = useState("");
   const [editErrors, setEditErrors] = useState({});
   const [editWarning, setEditWarning] = useState("");
-  const [leftWidth, setLeftWidth] = useState(280);
+  const [expandedCommentMode, setExpandedCommentMode] = useState(null); // "create" | "edit" | null
+  const [leftWidth, setLeftWidth] = useState(400);
   const [rightWidth, setRightWidth] = useState(320);
   const resizingRef = useRef(null); // "left" | "right" | null
 
@@ -3319,16 +3320,33 @@ export default function AnnotationPage() {
             <p className="mb-2 text-xs text-red-500">{createErrors.label}</p>
           )}
 
-          <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <label className="block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
+            <button
+              type="button"
+              onClick={() => setExpandedCommentMode("create")}
+              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-indigo-600 transition hover:bg-indigo-50"
+            >
+              <Maximize2 className="h-3.5 w-3.5" />
+              Expand
+            </button>
+          </div>
           <textarea
             value={createComment}
             onChange={(e) => setCreateComment(e.target.value)}
-            rows={3}
-            className={`mb-2 w-full rounded-lg border px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${createErrors.comment ? "border-red-400" : "border-slate-200"
+            maxLength={2000}
+            className={`mb-1 min-h-[260px] w-full resize-y rounded-lg border px-3 py-2 text-sm leading-6 outline-none focus:ring-2 focus:ring-indigo-300 ${createErrors.comment ? "border-red-400" : "border-slate-200"
               }`}
-            placeholder="Add a note about this annotation..."
+            placeholder="Add a detailed note about this annotation..."
           />
-          {createErrors.comment && <p className="mb-2 text-xs text-red-500">{createErrors.comment}</p>}
+          <div className="mb-2 flex items-center justify-between gap-2">
+            {createErrors.comment ? (
+              <p className="text-xs text-red-500">{createErrors.comment}</p>
+            ) : (
+              <span />
+            )}
+            <span className="text-xs tabular-nums text-slate-400">{createComment.length} / 2000</span>
+          </div>
           {createWarning && <p className="mb-2 text-xs text-amber-600">{createWarning}</p>}
 
           <button
@@ -3409,12 +3427,13 @@ export default function AnnotationPage() {
                   return (
                     <div
                       key={`waveform-${selection.userId}`}
-                      className="pointer-events-none absolute inset-y-0 z-[15] border-x-2"
+                      className="pointer-events-none absolute inset-y-0 z-[15] border-x-[3px]"
                       style={{
                         left: `${((clippedStart - viewStart) / viewDuration) * 100}%`,
                         width: `${((clippedEnd - clippedStart) / viewDuration) * 100}%`,
                         borderColor: overlayColor.border,
                         backgroundColor: overlayColor.fill,
+                        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.85), 0 0 0 1px rgba(15,23,42,0.55)",
                       }}
                       aria-label={`${collaboratorName} is editing from ${formatTimestamp(start)} to ${formatTimestamp(end)}`}
                     >
@@ -3450,7 +3469,7 @@ export default function AnnotationPage() {
 
                   {duration > 0 && activeSelection && (
                     <div
-                      className="pointer-events-none absolute inset-y-0 z-10 border-x-2 border-indigo-300 bg-indigo-400/20"
+                      className="pointer-events-none absolute inset-y-0 z-10 border border-cyan-300 bg-cyan-300/[0.08] shadow-[0_0_4px_rgba(103,232,249,0.85)]"
                       style={{
                         left: `${(activeSelection.start / duration) * 100}%`,
                         width: `${((activeSelection.end - activeSelection.start) / duration) * 100}%`,
@@ -3470,12 +3489,13 @@ export default function AnnotationPage() {
                     return (
                       <div
                         key={selection.userId}
-                        className="pointer-events-none absolute inset-y-0 z-[15] border-x-2"
+                        className="pointer-events-none absolute inset-y-0 z-[15] border-x-[3px]"
                         style={{
                           left: `${(start / duration) * 100}%`,
                           width: `${((end - start) / duration) * 100}%`,
                           borderColor: overlayColor.border,
                           backgroundColor: overlayColor.fill,
+                          boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.85), 0 0 0 1px rgba(15,23,42,0.55)",
                         }}
                         aria-label={`${collaboratorName} is editing from ${formatTimestamp(start)} to ${formatTimestamp(end)}`}
                       >
@@ -3896,16 +3916,33 @@ export default function AnnotationPage() {
                 </div>
 
                 <div>
-                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <label className="block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedCommentMode("edit")}
+                      className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-indigo-600 transition hover:bg-indigo-50"
+                    >
+                      <Maximize2 className="h-3.5 w-3.5" />
+                      Expand
+                    </button>
+                  </div>
                   <textarea
                     value={editComment}
                     onChange={(e) => setEditComment(e.target.value)}
-                    rows={4}
-                    className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${editErrors.comment ? "border-red-400" : "border-slate-200"
+                    maxLength={2000}
+                    className={`min-h-[220px] w-full resize-y rounded-lg border px-3 py-2 text-sm leading-6 outline-none focus:ring-2 focus:ring-indigo-300 ${editErrors.comment ? "border-red-400" : "border-slate-200"
                       }`}
-                    placeholder="Add a note about this annotation..."
+                    placeholder="Add a detailed note about this annotation..."
                   />
-                  {editErrors.comment && <p className="mt-1 text-xs text-red-500">{editErrors.comment}</p>}
+                  <div className="mt-1 flex items-center justify-between gap-2">
+                    {editErrors.comment ? (
+                      <p className="text-xs text-red-500">{editErrors.comment}</p>
+                    ) : (
+                      <span />
+                    )}
+                    <span className="text-xs tabular-nums text-slate-400">{editComment.length} / 2000</span>
+                  </div>
                 </div>
 
                 {editWarning && <p className="text-xs text-amber-600">{editWarning}</p>}
@@ -4098,6 +4135,63 @@ export default function AnnotationPage() {
               <p className="mt-2 text-xs text-slate-400">
                 Custom labels are saved to your account and can be reused across your projects.
               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Expanded comment editor */}
+      {expandedCommentMode && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/35 p-6 backdrop-blur-sm">
+          <div className="flex h-[75vh] w-full max-w-4xl flex-col rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-800">Annotation Comment</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  Write a detailed note while keeping the audio workspace unchanged.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExpandedCommentMode(null)}
+                className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Close expanded comment editor"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <textarea
+              autoFocus
+              value={expandedCommentMode === "create" ? createComment : editComment}
+              onChange={(e) => {
+                if (expandedCommentMode === "create") {
+                  setCreateComment(e.target.value);
+                } else {
+                  setEditComment(e.target.value);
+                }
+              }}
+              maxLength={2000}
+              className="min-h-0 flex-1 resize-none rounded-xl border border-slate-200 p-4 text-sm leading-6 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-200"
+              placeholder="Write your annotation comment..."
+            />
+
+            <div className="mt-3 flex items-center justify-between gap-4">
+              <span className="text-xs text-slate-400">
+                The text is kept in sync with the annotation form.
+              </span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs tabular-nums text-slate-400">
+                  {(expandedCommentMode === "create" ? createComment : editComment).length} / 2000
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setExpandedCommentMode(null)}
+                  className="rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-indigo-700"
+                >
+                  Done
+                </button>
+              </div>
             </div>
           </div>
         </div>
