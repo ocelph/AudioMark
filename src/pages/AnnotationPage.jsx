@@ -2780,7 +2780,7 @@ export default function AnnotationPage() {
   return (
     <div className="flex h-screen flex-col bg-slate-50">
       {/* Top bar */}
-      <div className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-3">
+      <div className="relative flex items-center justify-between border-b border-slate-200 bg-white px-6 py-3">
         <div className="flex items-center gap-4">
           <button
             onClick={() => navigate("/dashboard")}
@@ -2791,7 +2791,8 @@ export default function AnnotationPage() {
           <h1 className="text-lg font-semibold text-slate-800">{fileName}</h1>
         </div>
 
-        <div className="flex items-center gap-2 text-sm text-slate-500">
+        <div style={{ left: `${leftWidth + 6}px` }}
+          className="absolute flex items-center gap-2 text-sm text-slate-500">
           <div className="flex -space-x-2">
             {activeCollaborators.map((collaborator) => (
               <div
@@ -3698,12 +3699,12 @@ export default function AnnotationPage() {
           <>
             {/* Drag handle — resize edit panel */}
             <div
-              onMouseDown={() => (resizingRef.current = "right")}
-              className="w-1.5 flex-shrink-0 cursor-col-resize bg-slate-100 hover:bg-indigo-200 transition"
+              onMouseDown={() => (resizingRef.current = "left")}
+              className="order-[-1] w-1.5 flex-shrink-0 cursor-col-resize bg-slate-100 hover:bg-indigo-200 transition"
             />
 
-            {/* Right panel — only opens after Edit is selected from the annotation list */}
-            <div style={{ width: rightWidth }} className="flex-shrink-0 overflow-y-auto border-l border-slate-200 bg-white px-4 py-4">
+            {/* Edit mode uses the same left-side panel position */}
+            <div style={{ width: leftWidth }} className="order-[-2] flex-shrink-0 overflow-y-auto border-r border-slate-200 bg-white px-4 py-4">
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-slate-700">Edit Annotation</h2>
                 <button onClick={handleClosePanel} className="text-slate-400 hover:text-slate-600 transition" aria-label="Close edit panel">
