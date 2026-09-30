@@ -14,9 +14,9 @@ import MiscellaneousLabelModal from "../components/MiscellaneousLabelModal";
 // Built-in annotation class choices.
 // User-level custom labels are created and selected through the Custom Label modal.
 const DEFAULT_CLASSES = [
-  { name: "Default Label", color: "#22c55e" },
+  { name: "Atlas Label", color: "#22c55e" },
+  { name: "Others", color: "#f97316" },
   { name: "Custom Label", color: "#3b82f6" },
-  { name: "Miscellaneous", color: "#f97316" },
 ];
 const PALETTE = ["#a855f7", "#ec4899", "#14b8a6", "#eab308", "#ef4444", "#06b6d4"];
 
@@ -908,9 +908,9 @@ export default function AnnotationPage() {
   const zoomLevelRef = useRef(1);
 
   // Annotation class selection
-  // Default and Miscellaneous are built-in classes.
+  // Atlas Label and Others are built-in classes.
   // Custom labels are stored per user in Firestore and selected through a modal.
-  const [selectedClassType, setSelectedClassType] = useState("Default Label");
+  const [selectedClassType, setSelectedClassType] = useState("Atlas Label");
   const [classSearch, setClassSearch] = useState("");
   const [editClassSearch, setEditClassSearch] = useState("");
   const [customLabels, setCustomLabels] = useState([]);
@@ -1727,7 +1727,7 @@ export default function AnnotationPage() {
           type: "custom",
         }
         : null
-      : selectedClassType === "Miscellaneous"
+      : selectedClassType === "Others"
         ? selectedMiscellaneousLabel
           ? {
             name: selectedMiscellaneousLabel.name,
@@ -1780,7 +1780,7 @@ export default function AnnotationPage() {
       return;
     }
 
-    if (className === "Miscellaneous") {
+    if (className === "Others") {
       setMiscellaneousModalMode("create");
       setShowMiscellaneousModal(true);
       return;
@@ -1829,7 +1829,7 @@ export default function AnnotationPage() {
       setEditAnnotationClass(annotationClass);
       setEditErrors((prev) => ({ ...prev, label: undefined }));
     } else {
-      setSelectedClassType("Miscellaneous");
+      setSelectedClassType("Others");
       setSelectedMiscellaneousLabel(sound);
       setSelectedCustomLabelId("");
       setCreateErrors((prev) => ({ ...prev, label: undefined }));
@@ -1928,7 +1928,7 @@ export default function AnnotationPage() {
       errors.label = "Select or create a custom label.";
     }
 
-    if (selectedClassType === "Miscellaneous" && !selectedMiscellaneousLabel) {
+    if (selectedClassType === "Others" && !selectedMiscellaneousLabel) {
       errors.label = "Select a predefined sound label.";
     }
 
@@ -2130,7 +2130,7 @@ export default function AnnotationPage() {
       return;
     }
 
-    if (className === "Miscellaneous") {
+    if (className === "Others") {
       setMiscellaneousModalMode("edit");
       setShowMiscellaneousModal(true);
       return;
@@ -3168,7 +3168,7 @@ export default function AnnotationPage() {
                   ? selectedCustomLabel.name
                   : null;
               const miscellaneousSummary =
-                annotationClass.name === "Miscellaneous" && selectedMiscellaneousLabel
+                annotationClass.name === "Others" && selectedMiscellaneousLabel
                   ? selectedMiscellaneousLabel.name
                   : null;
 
@@ -3289,7 +3289,7 @@ export default function AnnotationPage() {
             </div>
           )}
 
-          {selectedClassType === "Miscellaneous" && selectedMiscellaneousLabel && (
+          {selectedClassType === "Others" && selectedMiscellaneousLabel && (
             <div
               className={`mb-4 rounded-lg border px-3 py-2 ${createErrors.label ? "border-red-300 bg-red-50" : "border-slate-200 bg-slate-50"
                 }`}
@@ -3761,14 +3761,14 @@ export default function AnnotationPage() {
                       const isSelected =
                         annotationClass.name === "Custom Label"
                           ? isCustom
-                          : annotationClass.name === "Miscellaneous"
+                          : annotationClass.name === "Others"
                             ? isMisc
                             : !isCustom && !isMisc && editLabel === annotationClass.name;
 
                       const summary =
                         annotationClass.name === "Custom Label" && isCustom
                           ? editLabel
-                          : annotationClass.name === "Miscellaneous" && isMisc
+                          : annotationClass.name === "Others" && isMisc
                             ? editLabel
                             : null;
 
