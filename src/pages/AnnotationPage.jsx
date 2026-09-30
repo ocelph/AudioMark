@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { auth, db } from "../services/firebase";
+import { auth, db, realtimeDb } from "../services/firebase";
 import { doc, getDoc, collection, addDoc, updateDoc, deleteDoc, serverTimestamp, onSnapshot, query, orderBy } from "firebase/firestore";
+import { ref as databaseRef, onValue, onDisconnect, set, remove, runTransaction as runRealtimeTransaction, serverTimestamp as realtimeServerTimestamp } from "firebase/database";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
 import Spectrogram from "wavesurfer.js/dist/plugins/spectrogram.js";
@@ -13,9 +14,9 @@ import MiscellaneousLabelModal from "../components/MiscellaneousLabelModal";
 // Built-in annotation class choices.
 // User-level custom labels are created and selected through the Custom Label modal.
 const DEFAULT_CLASSES = [
-  { name: "Default Label", color: "#22c55e" },
+  { name: "Atlas Label", color: "#22c55e" },
+  { name: "Others", color: "#f97316" },
   { name: "Custom Label", color: "#3b82f6" },
-  { name: "Miscellaneous", color: "#f97316" },
 ];
 const PALETTE = ["#a855f7", "#ec4899", "#14b8a6", "#eab308", "#ef4444", "#06b6d4"];
 
@@ -24,8 +25,7 @@ const PALETTE = ["#a855f7", "#ec4899", "#14b8a6", "#eab308", "#ef4444", "#06b6d4
 const ZOOM_LEVELS = [1, 1.5, 2, 3, 4, 6, 8];
 
 // Half a millisecond — used for float-safe timestamp comparison so that
-// values that should be equal (but differ by binary-representation noise)
-// are treated as the same.
+// values that should be equal (but differ by binary-representation noise) are treated as the same.
 const TIME_EPSILON = 0.0005;
 const isSameTime = (a, b) => Math.abs(Number(a) - Number(b)) < TIME_EPSILON;
 
@@ -136,6 +136,26 @@ const getInitials = (nameOrEmail) => {
   return base.slice(0, 2).toUpperCase();
 };
 
+const getAnnotationAuthorInitials = (annotation) => {
+  return getInitials(
+    annotation.authorName ||
+    annotation.authorEmail ||
+    "Unknown"
+  );
+};
+
+
+const authorColorPalette = [
+  "bg-blue-100 text-blue-700 ring-blue-300",
+  "bg-purple-100 text-purple-700 ring-purple-300",
+  "bg-emerald-100 text-emerald-700 ring-emerald-300",
+  "bg-amber-100 text-amber-700 ring-amber-300",
+  "bg-pink-100 text-pink-700 ring-pink-300",
+  "bg-cyan-100 text-cyan-700 ring-cyan-300",
+  "bg-rose-100 text-rose-700 ring-rose-300",
+  "bg-violet-100 text-violet-700 ring-violet-300",
+];
+
 // Shared validation for both the manual "create" form and the "edit" form.
 // Checks required fields, a valid time range, length limits, and one hard
 // edge case (exact duplicate time range — blocked). Duplicate detection uses
@@ -151,7 +171,7 @@ const validateAnnotationFields = ({ label, start, end, comment }, { annotations,
   if (!Number.isFinite(start) || start < 0) errors.start = "Start time must be 0 or greater";
   if (!Number.isFinite(end) || end <= start) errors.end = "End time must be greater than start time";
 
-  if (comment && comment.trim().length > 500) errors.comment = "Comment must be under 500 characters";
+  if (comment && comment.trim().length > 2000) errors.comment = "Comment must be under 2000 characters";
 
   if (!errors.start && !errors.end) {
     const duplicate = annotations.some(
@@ -168,8 +188,8 @@ const findOverlap = (annotations, start, end, excludeId) =>
   annotations.find((a) => a.id !== excludeId && start < a.endTime && end > a.startTime);
 
 
-// ------------------ DOWNLOAD FEATURE ------------------
-// ---------- Download audio segment ---------
+// Download feature
+// Download audio segment
 // Load and decode the original recording
 const sanitizeFilePart = (value) => {
   const cleaned = String(value || "")
@@ -426,8 +446,7 @@ const verifyGeneratedWav = async (
     throw new Error("No audio file was generated.");
   }
 
-  // A PCM WAV requires at least the 44-byte header
-  // plus actual audio data.
+  // A PCM WAV requires at least the 44-byte header plus actual audio data
   if (blob.size <= 44) {
     throw new Error(
       "The generated audio file is empty."
@@ -444,8 +463,7 @@ const verifyGeneratedWav = async (
       ...bytes.slice(start, start + length)
     );
 
-  // WAV must contain RIFF at bytes 0-3
-  // and WAVE at bytes 8-11.
+  // WAV must contain RIFF at bytes 0-3 and WAVE at bytes 8-11
   if (
     readText(0, 4) !== "RIFF" ||
     readText(8, 4) !== "WAVE"
@@ -504,12 +522,12 @@ const verifyGeneratedWav = async (
     try {
       await audioContext.close();
     } catch {
-      // Nothing else required.
+      // Nothing else required
     }
   }
 };
 
-// broswer download function
+// Browser download function
 const downloadBlob = (blob, filename) => {
   const objectUrl =
     URL.createObjectURL(blob);
@@ -529,7 +547,7 @@ const downloadBlob = (blob, filename) => {
   }, 1000);
 };
 
-// Convert Firestore's createdAt
+// Format Firestore createdAt
 const formatExportDate = (value) => {
   if (!value) return null;
 
@@ -543,7 +561,7 @@ const formatExportDate = (value) => {
   return typeof value === "string" ? value : null;
 };
 
-// ---------- Download specific annotation ---------
+// Download specific annotation
 // Build the annotation export object (start/end timestamps, label, comment, duration, creation time)
 const buildAnnotationExportRecord = (annotation) => {
   if (!annotation) throw new Error("No annotation was selected.");
@@ -568,7 +586,7 @@ const buildAnnotationExportRecord = (annotation) => {
 };
 
 
-// comments may contain commas, "quotes" or line breaks
+// Comments may contain commas, "quotes" or line breaks
 const escapeCsvValue = (value) => {
   if (value === null || value === undefined) return "";
 
@@ -579,7 +597,7 @@ const escapeCsvValue = (value) => {
   return text;
 };
 
-// csv generator for one annotation
+// Generate CSV for one annotation
 const buildAnnotationCsv = (record) => {
   const row = {
     startTimeSeconds: record.startTimeSeconds,
@@ -598,7 +616,7 @@ const buildAnnotationCsv = (record) => {
   return `${headers.join(",")}\r\n${values.join(",")}`;
 };
 
-// validate the one generated annotation export
+// Validate the one generated annotation export
 const verifyAnnotationExport = (content, format) => {
   if (typeof content !== "string" || content.trim().length === 0) {
     throw new Error("The generated annotation export is empty.");
@@ -644,7 +662,7 @@ const verifyAnnotationExport = (content, format) => {
   throw new Error("Unsupported annotation export format.");
 };
 
-// ---------- Download annotation and audio segment ---------
+// Download annotation and audio segment
 const verifyGeneratedZip = async (zipBlob, expectedFileNames) => {
   if (!(zipBlob instanceof Blob) || zipBlob.size === 0) {
     throw new Error("The generated ZIP file is empty.");
@@ -676,8 +694,8 @@ const verifyGeneratedZip = async (zipBlob, expectedFileNames) => {
 };
 
 
-// ---------- Download all annotations ---------
-// csv generator for al annotations
+// Download all annotations
+// Generate CSV for all annotations
 const buildAllAnnotationsCsv = (records) => {
   if (!Array.isArray(records) || records.length === 0) {
     throw new Error("There are no annotations to export.");
@@ -712,7 +730,7 @@ const buildAllAnnotationsCsv = (records) => {
   return `${headers.join(",")}\r\n${rows.join("\r\n")}`;
 };
 
-// validate all the generated annotation export
+// Validate all the generated annotation export
 const verifyAllAnnotationsExport = (content, format, expectedCount) => {
   if (typeof content !== "string" || content.trim().length === 0) {
     throw new Error("The generated annotations export is empty.");
@@ -773,15 +791,19 @@ const verifyAllAnnotationsExport = (content, format, expectedCount) => {
   throw new Error("Unsupported annotation export format.");
 };
 
-
-
-
 export default function AnnotationPage() {
-  const { projectId } = useParams();
+  const { ownerId, projectId } = useParams();
   const navigate = useNavigate();
 
-  const [uid, setUid] = useState(null);
+  const [currentUserId, setCurrentUserId] = useState(null);
+  const [currentUserName, setCurrentUserName] = useState("");
+  const [currentUserEmail, setCurrentUserEmail] = useState("");
   const [userInitials, setUserInitials] = useState("U");
+  const [activeCollaborators, setActiveCollaborators] = useState([]);
+  const [collaboratorSelections, setCollaboratorSelections] = useState([]);
+  const [editLockNotice, setEditLockNotice] = useState("");
+  const [syncStatus, setSyncStatus] = useState("connected");
+  const [syncMessage, setSyncMessage] = useState("");
   const [audioUrl, setAudioUrl] = useState(null);
   const [fileName, setFileName] = useState("");
   const [annotations, setAnnotations] = useState([]);
@@ -804,7 +826,7 @@ export default function AnnotationPage() {
   // Shared waveform/spectrogram synchronisation state.
   const [activeSelection, setActiveSelection] = useState(null);
 
-  // Professional zoom model:
+  // Zoom model:
   // 1x = fit the entire audio into the current waveform width.
   // Higher values zoom relative to that fitted width, regardless of audio length or screen size.
   const [zoomLevel, setZoomLevel] = useState(1);
@@ -822,6 +844,49 @@ export default function AnnotationPage() {
   const activeRegionRef = useRef(null);
   const syncingRegionRef = useRef(false);
   const editingRegionRef = useRef(false);
+  const activeEditLockRef = useRef(null);
+  const authorColorMapRef = useRef(new Map());
+  const availableAuthorColorsRef = useRef([]);
+  const hasConnectedOnceRef = useRef(false);
+  const restoreMessageTimeoutRef = useRef(null);
+  const collaboratorSelectionWriteTimeoutRef = useRef(null);
+
+  const getAuthorColor = (authorId) => {
+    if (!authorId) {
+      return "bg-slate-100 text-slate-500 ring-slate-300";
+    }
+
+    if (authorColorMapRef.current.has(authorId)) {
+      return authorColorMapRef.current.get(authorId);
+    }
+
+    if (availableAuthorColorsRef.current.length === 0) {
+      availableAuthorColorsRef.current = [...authorColorPalette]
+        .sort(() => Math.random() - 0.5);
+    }
+
+    const color = availableAuthorColorsRef.current.shift();
+    authorColorMapRef.current.set(authorId, color);
+    return color;
+  };
+
+  // Convert the existing collaborator colour assignment into an overlay colour
+  // for live selections. This keeps ADP-115 visually consistent with the
+  // collaborator avatars and annotation-author colours already used on the page.
+  const getCollaboratorOverlayColor = (userId) => {
+    const classes = getAuthorColor(userId);
+
+    if (classes.includes("purple")) return { border: "#9333ea", fill: "rgba(147, 51, 234, 0.30)" };
+    if (classes.includes("emerald")) return { border: "#059669", fill: "rgba(5, 150, 105, 0.30)" };
+    if (classes.includes("amber")) return { border: "#d97706", fill: "rgba(217, 119, 6, 0.30)" };
+    if (classes.includes("pink")) return { border: "#db2777", fill: "rgba(219, 39, 119, 0.30)" };
+    if (classes.includes("cyan")) return { border: "#0891b2", fill: "rgba(8, 145, 178, 0.30)" };
+    if (classes.includes("rose")) return { border: "#e11d48", fill: "rgba(225, 29, 72, 0.30)" };
+    if (classes.includes("violet")) return { border: "#7c3aed", fill: "rgba(124, 58, 237, 0.30)" };
+    if (classes.includes("blue")) return { border: "#2563eb", fill: "rgba(37, 99, 235, 0.30)" };
+
+    return { border: "#475569", fill: "rgba(71, 85, 105, 0.30)" };
+  };
 
   // Guards against React state updates after unmount. Any async WaveSurfer
   // callback (ready, timeupdate, error, etc.) checks this before calling
@@ -842,10 +907,10 @@ export default function AnnotationPage() {
   // read the current zoom without being re-subscribed every time zoom changes.
   const zoomLevelRef = useRef(1);
 
-  // Annotation class selection.
-  // Default and Miscellaneous are built-in classes.
+  // Annotation class selection
+  // Atlas Label and Others are built-in classes.
   // Custom labels are stored per user in Firestore and selected through a modal.
-  const [selectedClassType, setSelectedClassType] = useState("Default Label");
+  const [selectedClassType, setSelectedClassType] = useState("Atlas Label");
   const [classSearch, setClassSearch] = useState("");
   const [editClassSearch, setEditClassSearch] = useState("");
   const [customLabels, setCustomLabels] = useState([]);
@@ -866,12 +931,13 @@ export default function AnnotationPage() {
   const [createWarning, setCreateWarning] = useState("");
   const [editErrors, setEditErrors] = useState({});
   const [editWarning, setEditWarning] = useState("");
-  const [leftWidth, setLeftWidth] = useState(280);
+  const [expandedCommentMode, setExpandedCommentMode] = useState(null); // "create" | "edit" | null
+  const [leftWidth, setLeftWidth] = useState(400);
   const [rightWidth, setRightWidth] = useState(320);
   const resizingRef = useRef(null); // "left" | "right" | null
 
 
-  // Download function states
+  // Download state
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [showAnnotationFormatOptions, setShowAnnotationFormatOptions] = useState(false);
   const [showCombinedFormatOptions, setShowCombinedFormatOptions] = useState(false);
@@ -882,7 +948,7 @@ export default function AnnotationPage() {
   const [exportFeedback, setExportFeedback] = useState(null);
   const downloadMenuRef = useRef(null);
 
-  // Mount / unmount marker for async setState guards.
+  // Track component mount state for async state updates
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
@@ -890,6 +956,14 @@ export default function AnnotationPage() {
       if (scrollRafRef.current) {
         cancelAnimationFrame(scrollRafRef.current);
         scrollRafRef.current = null;
+      }
+      if (restoreMessageTimeoutRef.current) {
+        clearTimeout(restoreMessageTimeoutRef.current);
+        restoreMessageTimeoutRef.current = null;
+      }
+      if (collaboratorSelectionWriteTimeoutRef.current) {
+        clearTimeout(collaboratorSelectionWriteTimeoutRef.current);
+        collaboratorSelectionWriteTimeoutRef.current = null;
       }
     };
   }, []);
@@ -901,7 +975,7 @@ export default function AnnotationPage() {
   }, [zoomLevel]);
 
 
-  // Load project (the project doc doubles as the "file" — one project = one recording)
+  // Load project
   useEffect(() => {
     const loadProject = async () => {
       try {
@@ -910,14 +984,29 @@ export default function AnnotationPage() {
           navigate("/login");
           return;
         }
-        const projectSnap = await getDoc(doc(db, "users", user.uid, "projects", projectId));
+        const [projectSnap, currentUserSnap] = await Promise.all([
+          getDoc(doc(db, "users", ownerId, "projects", projectId)),
+          getDoc(doc(db, "users", user.uid)),
+        ]);
         if (!isMountedRef.current) return;
+
+        const currentUserProfile = currentUserSnap.exists() ? currentUserSnap.data() : {};
+        const profileName = [currentUserProfile.firstName, currentUserProfile.lastName]
+          .filter(Boolean)
+          .join(" ")
+          .trim();
+        const resolvedUserName =
+          profileName || user.displayName || user.email?.split("@")[0] || "Unknown User";
+
+        setCurrentUserId(user.uid);
+        setCurrentUserName(resolvedUserName);
+        setCurrentUserEmail(user.email || currentUserProfile.email || "");
+        setUserInitials(getInitials(resolvedUserName || user.email));
+
         if (projectSnap.exists()) {
           const data = projectSnap.data();
           setFileName(data.project_title);
           setAudioUrl(data.download_url);
-          setUid(user.uid);
-          setUserInitials(getInitials(user.displayName || user.email));
         } else {
           setError("Project not found.");
         }
@@ -929,28 +1018,285 @@ export default function AnnotationPage() {
       }
     };
     loadProject();
-  }, [projectId, navigate]);
+  }, [ownerId, projectId, navigate]);
 
-  // Load annotations in real time (only once we know the uid)
+  // Track users who are currently viewing this annotation project.
   useEffect(() => {
-    if (!uid) return;
+    if (!currentUserId || !ownerId || !projectId) return;
+
+    const projectPresenceRef = databaseRef(
+      realtimeDb,
+      `presence/${ownerId}/${projectId}`
+    );
+    const currentUserPresenceRef = databaseRef(
+      realtimeDb,
+      `presence/${ownerId}/${projectId}/${currentUserId}`
+    );
+    const connectedRef = databaseRef(realtimeDb, ".info/connected");
+
+    const unsubscribePresence = onValue(projectPresenceRef, (snapshot) => {
+      if (!isMountedRef.current) return;
+
+      const presenceData = snapshot.val() || {};
+      const users = Object.entries(presenceData)
+        .map(([id, data]) => ({
+          id,
+          ...data,
+        }))
+        .filter((user) => user.online === true);
+
+      setActiveCollaborators(users);
+    });
+
+    const unsubscribeConnection = onValue(connectedRef, async (snapshot) => {
+      if (!isMountedRef.current) return;
+
+      const isConnected = snapshot.val() === true;
+
+      if (!isConnected) {
+        if (hasConnectedOnceRef.current) {
+          setSyncStatus("disconnected");
+          setSyncMessage(
+            "Connection lost — real-time updates are temporarily unavailable. Changes may not be synchronised with collaborators."
+          );
+        }
+        return;
+      }
+
+      if (hasConnectedOnceRef.current) {
+        setSyncStatus("restored");
+        setSyncMessage("Connection restored — real-time collaboration is active again.");
+
+        if (restoreMessageTimeoutRef.current) {
+          clearTimeout(restoreMessageTimeoutRef.current);
+        }
+
+        restoreMessageTimeoutRef.current = setTimeout(() => {
+          if (!isMountedRef.current) return;
+          setSyncStatus("connected");
+          setSyncMessage("");
+          restoreMessageTimeoutRef.current = null;
+        }, 4000);
+      } else {
+        hasConnectedOnceRef.current = true;
+        setSyncStatus("connected");
+        setSyncMessage("");
+      }
+
+      try {
+        await onDisconnect(currentUserPresenceRef).remove();
+        await set(currentUserPresenceRef, {
+          userId: currentUserId,
+          name: currentUserName || currentUserEmail || "Unknown User",
+          email: currentUserEmail || "",
+          online: true,
+          lastSeen: realtimeServerTimestamp(),
+        });
+      } catch (error) {
+        console.error("Failed to update collaborator presence:", error);
+        if (isMountedRef.current) {
+          setSyncStatus("error");
+          setSyncMessage(
+            "Real-time collaboration could not reconnect completely. Please check your connection and try again."
+          );
+        }
+      }
+    });
+
+    return () => {
+      unsubscribePresence();
+      unsubscribeConnection();
+      remove(currentUserPresenceRef).catch((error) => {
+        console.error("Failed to clear collaborator presence:", error);
+      });
+    };
+  }, [
+    currentUserId,
+    currentUserName,
+    currentUserEmail,
+    ownerId,
+    projectId,
+  ]);
+
+  // ADP-115: listen for temporary selections made by other collaborators.
+  // These are presence-like UI hints only; they are never stored as annotations.
+  useEffect(() => {
+    if (!currentUserId || !ownerId || !projectId) return;
+
+    const selectionsRef = databaseRef(
+      realtimeDb,
+      `collaboratorSelections/${ownerId}/${projectId}`
+    );
+
+    const unsubscribe = onValue(selectionsRef, (snapshot) => {
+      if (!isMountedRef.current) return;
+
+      const data = snapshot.val() || {};
+      const selections = Object.entries(data)
+        .map(([userId, value]) => ({ userId, ...value }))
+        .filter((selection) =>
+          selection.userId !== currentUserId &&
+          Number.isFinite(Number(selection.start)) &&
+          Number.isFinite(Number(selection.end)) &&
+          Number(selection.end) > Number(selection.start)
+        );
+
+      setCollaboratorSelections(selections);
+    }, (error) => {
+      console.error("Failed to load collaborator selections:", error);
+    });
+
+    return () => {
+      unsubscribe();
+      setCollaboratorSelections([]);
+    };
+  }, [currentUserId, ownerId, projectId]);
+
+  // ADP-115: publish this user's current selection. A short throttle keeps
+  // dragging responsive without writing to Realtime Database on every pixel.
+  useEffect(() => {
+    if (!currentUserId || !ownerId || !projectId) return;
+
+    const currentSelectionRef = databaseRef(
+      realtimeDb,
+      `collaboratorSelections/${ownerId}/${projectId}/${currentUserId}`
+    );
+
+    onDisconnect(currentSelectionRef).remove().catch((error) => {
+      console.error("Failed to register collaborator selection cleanup:", error);
+    });
+
+    if (collaboratorSelectionWriteTimeoutRef.current) {
+      clearTimeout(collaboratorSelectionWriteTimeoutRef.current);
+    }
+
+    collaboratorSelectionWriteTimeoutRef.current = setTimeout(() => {
+      collaboratorSelectionWriteTimeoutRef.current = null;
+
+      if (
+        activeSelection &&
+        Number.isFinite(Number(activeSelection.start)) &&
+        Number.isFinite(Number(activeSelection.end)) &&
+        Number(activeSelection.end) > Number(activeSelection.start)
+      ) {
+        set(currentSelectionRef, {
+          userId: currentUserId,
+          name: currentUserName || currentUserEmail || "Another collaborator",
+          email: currentUserEmail || "",
+          start: Number(activeSelection.start),
+          end: Number(activeSelection.end),
+          editingAnnotationId: isEditing ? selectedAnnotation?.id || null : null,
+          updatedAt: realtimeServerTimestamp(),
+        }).catch((error) => {
+          console.error("Failed to publish collaborator selection:", error);
+        });
+      } else {
+        remove(currentSelectionRef).catch((error) => {
+          console.error("Failed to clear collaborator selection:", error);
+        });
+      }
+    }, 80);
+
+    return () => {
+      if (collaboratorSelectionWriteTimeoutRef.current) {
+        clearTimeout(collaboratorSelectionWriteTimeoutRef.current);
+        collaboratorSelectionWriteTimeoutRef.current = null;
+      }
+    };
+  }, [
+    activeSelection,
+    currentUserId,
+    currentUserName,
+    currentUserEmail,
+    ownerId,
+    projectId,
+    isEditing,
+    selectedAnnotation?.id,
+    syncStatus,
+  ]);
+
+  // Remove this user's temporary selection when leaving the annotation page.
+  useEffect(() => {
+    return () => {
+      if (!currentUserId || !ownerId || !projectId) return;
+
+      const currentSelectionRef = databaseRef(
+        realtimeDb,
+        `collaboratorSelections/${ownerId}/${projectId}/${currentUserId}`
+      );
+
+      remove(currentSelectionRef).catch((error) => {
+        console.error("Failed to clear collaborator selection on page exit:", error);
+      });
+    };
+  }, [currentUserId, ownerId, projectId]);
+
+  // Release any annotation checkout lock when leaving this page.
+  // Keep onDisconnect armed while the explicit release is attempted. If the
+  // page disappears before the transaction completes, Firebase can still
+  // remove the lock when this client disconnects.
+  useEffect(() => {
+    return () => {
+      const lockRef = activeEditLockRef.current;
+      if (!lockRef || !currentUserId) return;
+
+      runRealtimeTransaction(lockRef, (currentLock) => {
+        if (currentLock?.userId === currentUserId) return null;
+        return;
+      }).catch((error) => {
+        console.error("Failed to clear annotation lock on page exit:", error);
+      });
+      activeEditLockRef.current = null;
+    };
+  }, [currentUserId, ownerId, projectId]);
+
+  // Load project annotations in real time
+  useEffect(() => {
+    if (!ownerId) return;
+
     const q = query(
-      collection(db, "users", uid, "projects", projectId, "annotations"),
+      collection(db, "users", ownerId, "projects", projectId, "annotations"),
       orderBy("createdAt", "asc")
     );
     const unsubscribe = onSnapshot(q, (snapshot) => {
       if (!isMountedRef.current) return;
       const data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
       setAnnotations(data);
-    });
+    },
+      (error) => {
+        console.error("Failed to synchronise annotations:", error);
+        if (!isMountedRef.current) return;
+        setSyncStatus("error");
+        setSyncMessage(
+          "Annotations could not be synchronised in real time. Please check your connection. Firebase will retry automatically."
+        );
+      }
+    );
     return () => unsubscribe();
-  }, [uid, projectId]);
+  }, [ownerId, projectId]);
 
-  // Load user-level custom labels in real time.
+  // Close the edit panel if the annotation currently being edited no longer exists.
   useEffect(() => {
-    if (!uid) return;
+    if (!isEditing || !selectedAnnotation?.id) return;
 
-    const labelsRef = collection(db, "users", uid, "labels");
+    const annotationStillExists = annotations.some(
+      (annotation) => annotation.id === selectedAnnotation.id
+    );
+
+    if (!annotationStillExists) {
+      clearEditRegion();
+      setSelectedAnnotation(null);
+      setIsEditing(false);
+      setEditErrors({});
+      setEditWarning("");
+    }
+  }, [annotations, isEditing, selectedAnnotation]);
+
+  // Load user-level custom labels in real time
+  useEffect(() => {
+    if (!currentUserId) return;
+
+    const labelsRef = collection(db, "users", currentUserId, "labels");
     const unsubscribe = onSnapshot(
       labelsRef,
       (snapshot) => {
@@ -967,13 +1313,13 @@ export default function AnnotationPage() {
     );
 
     return () => unsubscribe();
-  }, [uid]);
+  }, [currentUserId]);
 
-  // Initialise one shared WaveSurfer instance for both visualisations.
+  // Initialise shared WaveSurfer instance
   // The spectrogram uses the same audio/timeline. Region overlays, zoom and
   // scrolling are also mirrored so the two panes behave as one linked view.
   useEffect(() => {
-    if (!audioUrl || !waveformRef.current || !spectrogramRef.current || !uid) return;
+    if (!audioUrl || !waveformRef.current || !spectrogramRef.current || !currentUserId) return;
 
     setAudioReady(false);
     setWaveformError("");
@@ -1164,7 +1510,7 @@ export default function AnnotationPage() {
       wavesurferRef.current = null;
       ws.destroy();
     };
-  }, [audioUrl, uid]);
+  }, [audioUrl, currentUserId]);
 
   const handleStopPlayback = () => {
     const ws = wavesurferRef.current;
@@ -1176,7 +1522,7 @@ export default function AnnotationPage() {
     setIsPlaying(false);
   };
 
-  // Applies a zoom level relative to a freshly-measured fit.
+  // Apply zoom level relative to the current fit
   // Wrapped in useCallback because it's referenced by the window resize
   // effect below, and we want the effect to see a stable reference.
   const applyZoomLevel = useCallback((level) => {
@@ -1239,7 +1585,7 @@ export default function AnnotationPage() {
     });
   }, [audioReady, duration]);
 
-  // Re-apply the current zoom level whenever the browser window is resized.
+  // Reapply zoom level when the browser window is resized
   // This keeps "Fit" (1x) genuinely fitting the current viewport width
   // instead of leaving stale pixels-per-second values from an earlier size.
   useEffect(() => {
@@ -1381,7 +1727,7 @@ export default function AnnotationPage() {
           type: "custom",
         }
         : null
-      : selectedClassType === "Miscellaneous"
+      : selectedClassType === "Others"
         ? selectedMiscellaneousLabel
           ? {
             name: selectedMiscellaneousLabel.name,
@@ -1434,7 +1780,7 @@ export default function AnnotationPage() {
       return;
     }
 
-    if (className === "Miscellaneous") {
+    if (className === "Others") {
       setMiscellaneousModalMode("create");
       setShowMiscellaneousModal(true);
       return;
@@ -1483,7 +1829,7 @@ export default function AnnotationPage() {
       setEditAnnotationClass(annotationClass);
       setEditErrors((prev) => ({ ...prev, label: undefined }));
     } else {
-      setSelectedClassType("Miscellaneous");
+      setSelectedClassType("Others");
       setSelectedMiscellaneousLabel(sound);
       setSelectedCustomLabelId("");
       setCreateErrors((prev) => ({ ...prev, label: undefined }));
@@ -1493,7 +1839,7 @@ export default function AnnotationPage() {
   };
 
   const handleCreateCustomLabel = async () => {
-    if (!uid) return;
+    if (!currentUserId) return;
 
     const trimmed = newLabelName.trim();
 
@@ -1521,7 +1867,7 @@ export default function AnnotationPage() {
 
     try {
       const color = PALETTE[customLabels.length % PALETTE.length];
-      const labelsRef = collection(db, "users", uid, "labels");
+      const labelsRef = collection(db, "users", currentUserId, "labels");
 
       const docRef = await addDoc(labelsRef, {
         name: trimmed,
@@ -1566,7 +1912,7 @@ export default function AnnotationPage() {
   };
 
   const handleCreateAnnotation = async () => {
-    if (!uid) return;
+    if (!currentUserId) return;
 
     const start = parseFloat(createStart);
     const end = parseFloat(createEnd);
@@ -1582,7 +1928,7 @@ export default function AnnotationPage() {
       errors.label = "Select or create a custom label.";
     }
 
-    if (selectedClassType === "Miscellaneous" && !selectedMiscellaneousLabel) {
+    if (selectedClassType === "Others" && !selectedMiscellaneousLabel) {
       errors.label = "Select a predefined sound label.";
     }
 
@@ -1598,13 +1944,18 @@ export default function AnnotationPage() {
     setCreateWarning(overlap ? `Heads up — this overlaps with "${overlap.label}".` : "");
 
     try {
-      await addDoc(collection(db, "users", uid, "projects", projectId, "annotations"), {
+      await addDoc(collection(db, "users", ownerId, "projects", projectId, "annotations"), {
         startTime: start,
         endTime: end,
         label,
         annotationClass,
         comment: createComment.trim(),
+        authorId: currentUserId,
+        authorName: currentUserName,
+        authorEmail: currentUserEmail,
         createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        updatedById: currentUserId,
       });
 
       if (!isMountedRef.current) return;
@@ -1680,7 +2031,76 @@ export default function AnnotationPage() {
     ws.setTime(start);
   };
 
-  const handleEditOpen = (annotation) => {
+  const releaseAnnotationLock = async () => {
+    const lockRef = activeEditLockRef.current;
+    if (!lockRef || !currentUserId) return;
+
+    try {
+      const result = await runRealtimeTransaction(lockRef, (currentLock) => {
+        if (!currentLock || currentLock.userId === currentUserId) return null;
+        return;
+      });
+
+      // Only cancel the disconnect cleanup after the explicit release has
+      // completed (or if the lock no longer belongs to this user). This avoids
+      // leaving a permanent lock when the connection drops during cleanup.
+      const remainingLock = result.snapshot.val();
+      if (result.committed || remainingLock?.userId !== currentUserId) {
+        await onDisconnect(lockRef).cancel();
+        activeEditLockRef.current = null;
+      }
+    } catch (error) {
+      // Do not cancel onDisconnect here. It is our fallback cleanup if the
+      // explicit transaction failed because the connection disappeared.
+      console.error("Failed to release annotation lock:", error);
+    }
+  };
+
+  const handleEditOpen = async (annotation) => {
+    if (!currentUserId || !ownerId || !projectId || !annotation?.id) return;
+
+    setEditLockNotice("");
+
+    const lockRef = databaseRef(
+      realtimeDb,
+      `annotationLocks/${ownerId}/${projectId}/${annotation.id}`
+    );
+
+    try {
+      const result = await runRealtimeTransaction(lockRef, (currentLock) => {
+        if (!currentLock || currentLock.userId === currentUserId) {
+          return {
+            userId: currentUserId,
+            name: currentUserName || currentUserEmail || "Another collaborator",
+            email: currentUserEmail || "",
+            annotationId: annotation.id,
+            lockedAt: Date.now(),
+          };
+        }
+
+        return;
+      });
+
+      if (!result.committed) {
+        const existingLock = result.snapshot.val();
+        const editorName =
+          existingLock?.name || existingLock?.email || "Another collaborator";
+        setEditLockNotice(
+          `${editorName} is currently editing this annotation. You can continue working on other annotations.`
+        );
+        return;
+      }
+
+      activeEditLockRef.current = lockRef;
+      await onDisconnect(lockRef).remove();
+    } catch (error) {
+      console.error("Failed to acquire annotation lock:", error);
+      setEditLockNotice(
+        "Unable to reserve this annotation for editing. Please try again."
+      );
+      return;
+    }
+
     setSelectedAnnotation(annotation);
     setEditLabel(annotation.label);
     setEditAnnotationClass(
@@ -1695,6 +2115,7 @@ export default function AnnotationPage() {
     setEditComment(annotation.comment || "");
     setEditErrors({});
     setEditWarning("");
+    setEditLockNotice("");
     setEditClassSearch("");
     editingRegionRef.current = true;
     setIsEditing(true);
@@ -1709,7 +2130,7 @@ export default function AnnotationPage() {
       return;
     }
 
-    if (className === "Miscellaneous") {
+    if (className === "Others") {
       setMiscellaneousModalMode("edit");
       setShowMiscellaneousModal(true);
       return;
@@ -1740,7 +2161,7 @@ export default function AnnotationPage() {
     setEditClassSearch("");
   };
 
-  // Now persists to Firestore, then updates what's shown in the panel.
+  // Save annotation edits to Firestore
   const handleSaveEdit = async () => {
     const start = parseFloat(editStart);
     const end = parseFloat(editEnd);
@@ -1756,7 +2177,7 @@ export default function AnnotationPage() {
     setEditWarning(overlap ? `Heads up — this overlaps with "${overlap.label}".` : "");
 
     try {
-      await updateDoc(doc(db, "users", uid, "projects", projectId, "annotations", selectedAnnotation.id), {
+      await updateDoc(doc(db, "users", ownerId, "projects", projectId, "annotations", selectedAnnotation.id), {
         label: editLabel.trim(),
         annotationClass:
           editAnnotationClass || {
@@ -1767,9 +2188,13 @@ export default function AnnotationPage() {
         startTime: start,
         endTime: end,
         comment: editComment.trim(),
+        updatedAt: serverTimestamp(),
+        updatedById: currentUserId,
       });
 
       if (!isMountedRef.current) return;
+
+      await releaseAnnotationLock();
 
       activeRegionRef.current?.remove();
       activeRegionRef.current = null;
@@ -1792,7 +2217,8 @@ export default function AnnotationPage() {
     setActiveSelection(null);
   };
 
-  const handleCancelEdit = () => {
+  const handleCancelEdit = async () => {
+    await releaseAnnotationLock();
     clearEditRegion();
     setSelectedAnnotation(null);
     setIsEditing(false);
@@ -1800,7 +2226,8 @@ export default function AnnotationPage() {
     setEditWarning("");
   };
 
-  const handleClosePanel = () => {
+  const handleClosePanel = async () => {
+    await releaseAnnotationLock();
     clearEditRegion();
     setSelectedAnnotation(null);
     setIsEditing(false);
@@ -1815,7 +2242,7 @@ export default function AnnotationPage() {
 
   const handleConfirmDelete = async () => {
     try {
-      await deleteDoc(doc(db, "users", uid, "projects", projectId, "annotations", annotationToDelete.id));
+      await deleteDoc(doc(db, "users", ownerId, "projects", projectId, "annotations", annotationToDelete.id));
       if (!isMountedRef.current) return;
 
       if (exportSelectedAnnotationId === annotationToDelete.id) {
@@ -1848,10 +2275,10 @@ export default function AnnotationPage() {
     )
     : [];
 
-  // determine which annotation is selected for download
+  // Determine selected annotation for download
   const exportSelectedAnnotation = annotations.find((annotation) => annotation.id === exportSelectedAnnotationId) || null;
 
-  // close the dropdown if user clicks elsewhere or presses escape
+  // Close download menu on outside click or Escape
   useEffect(() => {
     if (!showDownloadMenu) return;
 
@@ -1885,7 +2312,7 @@ export default function AnnotationPage() {
   }, [showDownloadMenu]);
 
 
-  // clear export selection if the annotation is deleted (because of real time Firestore storage)
+  // Clear export selection if the annotation is deleted in real time
   useEffect(() => {
     if (!exportSelectedAnnotationId) return;
 
@@ -1899,7 +2326,7 @@ export default function AnnotationPage() {
     }
   }, [annotations, exportSelectedAnnotationId,]);
 
-  // actual Download Audio Segment handler
+  // Download audio segment handler
   const handleDownloadAudioSegment = async () => {
     if (!exportSelectedAnnotation) {
       setExportFeedback({
@@ -1976,7 +2403,7 @@ export default function AnnotationPage() {
     }
   };
 
-  // actual Download Annotation Segment handler
+  // Download annotation handler
   const handleDownloadAnnotation = async (format) => {
     if (!exportSelectedAnnotation) {
       setExportFeedback({ type: "error", message: "Select an annotation before exporting annotation data." });
@@ -2048,7 +2475,7 @@ export default function AnnotationPage() {
     }
   };
 
-  // actual Download Annotation & Audio Segment handler
+  // Download annotation and audio segment handler
   const handleDownloadAudioAndAnnotation = async (format) => {
     if (!exportSelectedAnnotation) {
       setExportFeedback({ type: "error", message: "Select an annotation before exporting audio and annotation data." });
@@ -2147,7 +2574,7 @@ export default function AnnotationPage() {
   };
 
 
-  // actual Download All Annotations handler
+  // Download all annotations handler
   const handleDownloadAllAnnotations = async (format) => {
     if (annotations.length === 0) {
       setExportFeedback({ type: "error", message: "There are no annotations to export." });
@@ -2217,7 +2644,7 @@ export default function AnnotationPage() {
   };
 
 
-  // actual Download All Annotations & Audio segments handler
+  // Download all annotations and audio segments handler
   const handleDownloadAllAnnotationsAndAudio = async (format) => {
     if (annotations.length === 0) {
       setExportFeedback({ type: "error", message: "There are no annotations to export." });
@@ -2353,7 +2780,7 @@ export default function AnnotationPage() {
   return (
     <div className="flex h-screen flex-col bg-slate-50">
       {/* Top bar */}
-      <div className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-3">
+      <div className="relative flex items-center justify-between border-b border-slate-200 bg-white px-6 py-3">
         <div className="flex items-center gap-4">
           <button
             onClick={() => navigate("/dashboard")}
@@ -2364,11 +2791,23 @@ export default function AnnotationPage() {
           <h1 className="text-lg font-semibold text-slate-800">{fileName}</h1>
         </div>
 
-        <div className="flex items-center gap-2 text-sm text-slate-500">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-xs font-semibold text-indigo-700">
-            {userInitials}
+        <div style={{ left: `${leftWidth + 6}px` }}
+          className="absolute flex items-center gap-2 text-sm text-slate-500">
+          <div className="flex -space-x-2">
+            {activeCollaborators.map((collaborator) => (
+              <div
+                key={collaborator.id}
+                title={collaborator.name || collaborator.email || "Unknown user"}
+                className={`flex h-8 w-8 items-center justify-center rounded-full ring-2 ring-white text-xs font-semibold ${getAuthorColor(collaborator.id)}`}
+              >
+                {getInitials(collaborator.name || collaborator.email)}
+              </div>
+            ))}
           </div>
-          <span>1 collaborator</span>
+          <span>
+            {activeCollaborators.length}{" "}
+            {activeCollaborators.length === 1 ? "collaborator" : "collaborators"}
+          </span>
         </div>
 
         {/* Non-functional placeholders — separate tickets */}
@@ -2649,6 +3088,34 @@ export default function AnnotationPage() {
         </div>
       )}
 
+      {/* Real-time collaboration status */}
+      {syncMessage && (
+        <div
+          className={`border-b px-6 py-2 text-sm ${syncStatus === "restored"
+            ? "border-green-200 bg-green-50 text-green-700"
+            : "border-amber-200 bg-amber-50 text-amber-800"
+            }`}
+          role="status"
+        >
+          <div className="flex items-center justify-between gap-4">
+            <span>{syncMessage}</span>
+            {syncStatus !== "disconnected" && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSyncStatus("connected");
+                  setSyncMessage("");
+                }}
+                className="rounded p-1 opacity-60 transition hover:bg-black/5 hover:opacity-100"
+                aria-label="Dismiss synchronisation message"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Main content */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left panel — create annotation */}
@@ -2701,7 +3168,7 @@ export default function AnnotationPage() {
                   ? selectedCustomLabel.name
                   : null;
               const miscellaneousSummary =
-                annotationClass.name === "Miscellaneous" && selectedMiscellaneousLabel
+                annotationClass.name === "Others" && selectedMiscellaneousLabel
                   ? selectedMiscellaneousLabel.name
                   : null;
 
@@ -2822,7 +3289,7 @@ export default function AnnotationPage() {
             </div>
           )}
 
-          {selectedClassType === "Miscellaneous" && selectedMiscellaneousLabel && (
+          {selectedClassType === "Others" && selectedMiscellaneousLabel && (
             <div
               className={`mb-4 rounded-lg border px-3 py-2 ${createErrors.label ? "border-red-300 bg-red-50" : "border-slate-200 bg-slate-50"
                 }`}
@@ -2854,16 +3321,33 @@ export default function AnnotationPage() {
             <p className="mb-2 text-xs text-red-500">{createErrors.label}</p>
           )}
 
-          <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <label className="block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
+            <button
+              type="button"
+              onClick={() => setExpandedCommentMode("create")}
+              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-indigo-600 transition hover:bg-indigo-50"
+            >
+              <Maximize2 className="h-3.5 w-3.5" />
+              Expand
+            </button>
+          </div>
           <textarea
             value={createComment}
             onChange={(e) => setCreateComment(e.target.value)}
-            rows={3}
-            className={`mb-2 w-full rounded-lg border px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${createErrors.comment ? "border-red-400" : "border-slate-200"
+            maxLength={2000}
+            className={`mb-1 min-h-[260px] w-full resize-y rounded-lg border px-3 py-2 text-sm leading-6 outline-none focus:ring-2 focus:ring-indigo-300 ${createErrors.comment ? "border-red-400" : "border-slate-200"
               }`}
-            placeholder="Add a note about this annotation..."
+            placeholder="Add a detailed note about this annotation..."
           />
-          {createErrors.comment && <p className="mb-2 text-xs text-red-500">{createErrors.comment}</p>}
+          <div className="mb-2 flex items-center justify-between gap-2">
+            {createErrors.comment ? (
+              <p className="text-xs text-red-500">{createErrors.comment}</p>
+            ) : (
+              <span />
+            )}
+            <span className="text-xs tabular-nums text-slate-400">{createComment.length} / 2000</span>
+          </div>
           {createWarning && <p className="mb-2 text-xs text-amber-600">{createWarning}</p>}
 
           <button
@@ -2920,6 +3404,49 @@ export default function AnnotationPage() {
 
               <div className="relative">
                 <div ref={waveformRef} className="w-full px-2 py-3" />
+
+                {duration > 0 && collaboratorSelections.map((selection) => {
+                  const start = Math.max(0, Math.min(duration, Number(selection.start)));
+                  const end = Math.max(start, Math.min(duration, Number(selection.end)));
+                  if (end <= start) return null;
+
+                  const viewStart = Math.max(0, Number(visibleRange.start) || 0);
+                  const viewEnd =
+                    Number(visibleRange.end) > viewStart
+                      ? Math.min(duration, Number(visibleRange.end))
+                      : duration;
+                  const viewDuration = Math.max(TIME_EPSILON, viewEnd - viewStart);
+
+                  const clippedStart = Math.max(start, viewStart);
+                  const clippedEnd = Math.min(end, viewEnd);
+                  if (clippedEnd <= clippedStart) return null;
+
+                  const overlayColor = getCollaboratorOverlayColor(selection.userId);
+                  const collaboratorName =
+                    selection.name || selection.email || "Collaborator";
+
+                  return (
+                    <div
+                      key={`waveform-${selection.userId}`}
+                      className="pointer-events-none absolute inset-y-0 z-[15] border-x-[3px]"
+                      style={{
+                        left: `${((clippedStart - viewStart) / viewDuration) * 100}%`,
+                        width: `${((clippedEnd - clippedStart) / viewDuration) * 100}%`,
+                        borderColor: overlayColor.border,
+                        backgroundColor: overlayColor.fill,
+                        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.85), 0 0 0 1px rgba(15,23,42,0.55)",
+                      }}
+                      aria-label={`${collaboratorName} is editing from ${formatTimestamp(start)} to ${formatTimestamp(end)}`}
+                    >
+                      <div
+                        className="absolute left-1 top-1 max-w-[180px] truncate rounded px-2 py-1 text-[10px] font-semibold text-slate-900 shadow-sm"
+                        style={{ backgroundColor: overlayColor.border }}
+                      >
+                        {collaboratorName} is editing...
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
 
               <div className="border-y border-slate-200 bg-white px-3 py-2 text-xs font-medium uppercase tracking-wide text-slate-400">
@@ -2943,7 +3470,7 @@ export default function AnnotationPage() {
 
                   {duration > 0 && activeSelection && (
                     <div
-                      className="pointer-events-none absolute inset-y-0 z-10 border-x-2 border-indigo-300 bg-indigo-400/20"
+                      className="pointer-events-none absolute inset-y-0 z-10 border border-cyan-300 bg-cyan-300/[0.08] shadow-[0_0_4px_rgba(103,232,249,0.85)]"
                       style={{
                         left: `${(activeSelection.start / duration) * 100}%`,
                         width: `${((activeSelection.end - activeSelection.start) / duration) * 100}%`,
@@ -2951,6 +3478,37 @@ export default function AnnotationPage() {
                       aria-hidden="true"
                     />
                   )}
+
+                  {duration > 0 && collaboratorSelections.map((selection) => {
+                    const start = Math.max(0, Math.min(duration, Number(selection.start)));
+                    const end = Math.max(start, Math.min(duration, Number(selection.end)));
+                    if (end <= start) return null;
+
+                    const overlayColor = getCollaboratorOverlayColor(selection.userId);
+                    const collaboratorName = selection.name || selection.email || "Collaborator";
+
+                    return (
+                      <div
+                        key={selection.userId}
+                        className="pointer-events-none absolute inset-y-0 z-[15] border-x-[3px]"
+                        style={{
+                          left: `${(start / duration) * 100}%`,
+                          width: `${((end - start) / duration) * 100}%`,
+                          borderColor: overlayColor.border,
+                          backgroundColor: overlayColor.fill,
+                          boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.85), 0 0 0 1px rgba(15,23,42,0.55)",
+                        }}
+                        aria-label={`${collaboratorName} is editing from ${formatTimestamp(start)} to ${formatTimestamp(end)}`}
+                      >
+                        <div
+                          className="absolute left-1 top-1 max-w-[180px] truncate rounded px-2 py-1 text-[10px] font-semibold text-slate-900 shadow-sm"
+                          style={{ backgroundColor: overlayColor.border }}
+                        >
+                          {collaboratorName} is editing...
+                        </div>
+                      </div>
+                    );
+                  })}
 
                   {duration > 0 && (
                     <div
@@ -3055,7 +3613,7 @@ export default function AnnotationPage() {
                       <th className="px-3 py-2">Start Time</th>
                       <th className="px-3 py-2">End Time</th>
                       <th className="px-3 py-2">Label</th>
-                      <th className="px-3 py-2">User</th>
+                      <th className="px-3 py-2">Author</th>
                       <th className="px-3 py-2">Comments</th>
                       <th className="px-3 py-2">Actions</th>
                     </tr>
@@ -3072,6 +3630,11 @@ export default function AnnotationPage() {
                       })
                       .map((ann) => {
                         const dotColor = ann.annotationClass?.color || "#94a3b8";
+                        const hasAuthor = Boolean(ann.authorId);
+                        const authorStyle = getAuthorColor(ann.authorId);
+                        const authorTitle = hasAuthor
+                          ? ann.authorName || ann.authorEmail || "Unknown author"
+                          : "Unknown author";
                         return (
                           <tr
                             key={ann.id}
@@ -3094,8 +3657,11 @@ export default function AnnotationPage() {
                               </span>
                             </td>
                             <td className="px-3 py-2">
-                              <div className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-100 text-[10px] font-semibold text-indigo-700">
-                                {userInitials}
+                              <div
+                                className={`flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-semibold ${authorStyle}`}
+                                title={authorTitle}
+                              >
+                                {getAnnotationAuthorInitials(ann)}
                               </div>
                             </td>
                             <td className="max-w-[220px] truncate px-3 py-2 text-slate-500">{ann.comment}</td>
@@ -3133,12 +3699,12 @@ export default function AnnotationPage() {
           <>
             {/* Drag handle — resize edit panel */}
             <div
-              onMouseDown={() => (resizingRef.current = "right")}
-              className="w-1.5 flex-shrink-0 cursor-col-resize bg-slate-100 hover:bg-indigo-200 transition"
+              onMouseDown={() => (resizingRef.current = "left")}
+              className="order-[-1] w-1.5 flex-shrink-0 cursor-col-resize bg-slate-100 hover:bg-indigo-200 transition"
             />
 
-            {/* Right panel — only opens after Edit is selected from the annotation list */}
-            <div style={{ width: rightWidth }} className="flex-shrink-0 overflow-y-auto border-l border-slate-200 bg-white px-4 py-4">
+            {/* Edit mode uses the same left-side panel position */}
+            <div style={{ width: leftWidth }} className="order-[-2] flex-shrink-0 overflow-y-auto border-r border-slate-200 bg-white px-4 py-4">
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-slate-700">Edit Annotation</h2>
                 <button onClick={handleClosePanel} className="text-slate-400 hover:text-slate-600 transition" aria-label="Close edit panel">
@@ -3195,14 +3761,14 @@ export default function AnnotationPage() {
                       const isSelected =
                         annotationClass.name === "Custom Label"
                           ? isCustom
-                          : annotationClass.name === "Miscellaneous"
+                          : annotationClass.name === "Others"
                             ? isMisc
                             : !isCustom && !isMisc && editLabel === annotationClass.name;
 
                       const summary =
                         annotationClass.name === "Custom Label" && isCustom
                           ? editLabel
-                          : annotationClass.name === "Miscellaneous" && isMisc
+                          : annotationClass.name === "Others" && isMisc
                             ? editLabel
                             : null;
 
@@ -3351,16 +3917,33 @@ export default function AnnotationPage() {
                 </div>
 
                 <div>
-                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <label className="block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedCommentMode("edit")}
+                      className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-indigo-600 transition hover:bg-indigo-50"
+                    >
+                      <Maximize2 className="h-3.5 w-3.5" />
+                      Expand
+                    </button>
+                  </div>
                   <textarea
                     value={editComment}
                     onChange={(e) => setEditComment(e.target.value)}
-                    rows={4}
-                    className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300 ${editErrors.comment ? "border-red-400" : "border-slate-200"
+                    maxLength={2000}
+                    className={`min-h-[220px] w-full resize-y rounded-lg border px-3 py-2 text-sm leading-6 outline-none focus:ring-2 focus:ring-indigo-300 ${editErrors.comment ? "border-red-400" : "border-slate-200"
                       }`}
-                    placeholder="Add a note about this annotation..."
+                    placeholder="Add a detailed note about this annotation..."
                   />
-                  {editErrors.comment && <p className="mt-1 text-xs text-red-500">{editErrors.comment}</p>}
+                  <div className="mt-1 flex items-center justify-between gap-2">
+                    {editErrors.comment ? (
+                      <p className="text-xs text-red-500">{editErrors.comment}</p>
+                    ) : (
+                      <span />
+                    )}
+                    <span className="text-xs tabular-nums text-slate-400">{editComment.length} / 2000</span>
+                  </div>
                 </div>
 
                 {editWarning && <p className="text-xs text-amber-600">{editWarning}</p>}
@@ -3384,6 +3967,25 @@ export default function AnnotationPage() {
           </>
         )}
       </div>
+
+      {editLockNotice && (
+        <div className="fixed left-1/2 top-5 z-[100] w-[min(92vw,520px)] -translate-x-1/2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 shadow-lg">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-amber-800">Annotation currently in progress</p>
+              <p className="mt-1 text-sm text-amber-700">{editLockNotice}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setEditLockNotice("")}
+              className="rounded-md px-2 py-1 text-sm text-amber-700 hover:bg-amber-100"
+              aria-label="Dismiss annotation lock notice"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Custom label selection / creation modal */}
       {showMiscellaneousModal && (
@@ -3534,6 +4136,63 @@ export default function AnnotationPage() {
               <p className="mt-2 text-xs text-slate-400">
                 Custom labels are saved to your account and can be reused across your projects.
               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Expanded comment editor */}
+      {expandedCommentMode && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/35 p-6 backdrop-blur-sm">
+          <div className="flex h-[75vh] w-full max-w-4xl flex-col rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-800">Annotation Comment</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  Write a detailed note while keeping the audio workspace unchanged.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExpandedCommentMode(null)}
+                className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Close expanded comment editor"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <textarea
+              autoFocus
+              value={expandedCommentMode === "create" ? createComment : editComment}
+              onChange={(e) => {
+                if (expandedCommentMode === "create") {
+                  setCreateComment(e.target.value);
+                } else {
+                  setEditComment(e.target.value);
+                }
+              }}
+              maxLength={2000}
+              className="min-h-0 flex-1 resize-none rounded-xl border border-slate-200 p-4 text-sm leading-6 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-200"
+              placeholder="Write your annotation comment..."
+            />
+
+            <div className="mt-3 flex items-center justify-between gap-4">
+              <span className="text-xs text-slate-400">
+                The text is kept in sync with the annotation form.
+              </span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs tabular-nums text-slate-400">
+                  {(expandedCommentMode === "create" ? createComment : editComment).length} / 2000
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setExpandedCommentMode(null)}
+                  className="rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-indigo-700"
+                >
+                  Done
+                </button>
+              </div>
             </div>
           </div>
         </div>

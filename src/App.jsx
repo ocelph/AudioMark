@@ -16,9 +16,9 @@ function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/dashboard" element={<DashboardPage />} />
 
-        <Route path="/project/:projectId" element={<ProjectPage />} />
+        <Route path="/project/:ownerId/:projectId" element={<ProjectPage />} />
         <Route
-          path="/project/:projectId/annotation"
+          path="/project/:ownerId/:projectId/annotation"
           element={<AnnotationPage />}
         />
 

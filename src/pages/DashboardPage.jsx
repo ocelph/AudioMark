@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { Link, useNavigate } from "react-router-dom";
-import { collection, query, orderBy, onSnapshot, updateDoc, deleteDoc, doc } from "firebase/firestore";
+import { collection, query, orderBy, onSnapshot, updateDoc, deleteDoc, doc, getDoc, runTransaction, serverTimestamp } from "firebase/firestore";
 import { deleteObject, ref } from "firebase/storage";
 import { FileText, LogOut, Plus, UserCircle } from "lucide-react";
 import { auth, db, storage } from "../services/firebase";
@@ -9,6 +9,7 @@ import AddProjectModal from "../components/AddProjectModal";
 import ProjectActionsMenu from "../components/ProjectActionsMenu";
 import EditProjectModal from "../components/EditProjectModal";
 import DeleteProjectModal from "../components/DeleteProjectModal";
+import ShareProjectModal from "../components/ShareProjectModal";
 import Logo from '../components/Logo';
 import backgroundImg from "../assets/login_page_background.png";
 
@@ -24,14 +25,17 @@ export default function DashboardPage() {
   const navigate = useNavigate();
   const [username, setUsername] = useState("User");
   const [projects, setProjects] = useState([]);
+  const [sharedProjects, setSharedProjects] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [sharedLoading, setSharedLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [showAccountMenu, setShowAccountMenu] = useState(false);
-  
+
   //Project action modals
   const [selectedProject, setSelectedProject] = useState(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
   useEffect(() => {
@@ -67,9 +71,74 @@ export default function DashboardPage() {
           }
         );
 
-        return () => unsubscribeProjects();
+        const recipientEmail = (user.email || "").trim().toLowerCase();
+        let unsubscribeSharedProjects = () => { };
+
+        if (recipientEmail) {
+          const sharedProjectsRef = collection(
+            db,
+            "shared_projects",
+            recipientEmail,
+            "projects"
+          );
+
+          unsubscribeSharedProjects = onSnapshot(
+            sharedProjectsRef,
+            async (snapshot) => {
+              try {
+                const resolvedProjects = await Promise.all(
+                  snapshot.docs.map(async (accessDoc) => {
+                    const access = accessDoc.data();
+                    if (!access.ownerId || !access.projectId) return null;
+
+                    const originalProjectRef = doc(
+                      db,
+                      "users",
+                      access.ownerId,
+                      "projects",
+                      access.projectId
+                    );
+                    const originalProjectSnap = await getDoc(originalProjectRef);
+
+                    if (!originalProjectSnap.exists()) return null;
+
+                    return {
+                      accessId: accessDoc.id,
+                      ownerId: access.ownerId,
+                      projectId: access.projectId,
+                      role: access.role || "editor",
+                      sharedAt: access.sharedAt || null,
+                      ...originalProjectSnap.data(),
+                    };
+                  })
+                );
+
+                setSharedProjects(resolvedProjects.filter(Boolean));
+              } catch (error) {
+                console.error("Error resolving shared projects:", error);
+                setSharedProjects([]);
+              } finally {
+                setSharedLoading(false);
+              }
+            },
+            (error) => {
+              console.error("Error fetching shared projects:", error);
+              setSharedProjects([]);
+              setSharedLoading(false);
+            }
+          );
+        } else {
+          setSharedProjects([]);
+          setSharedLoading(false);
+        }
+
+        return () => {
+          unsubscribeProjects();
+          unsubscribeSharedProjects();
+        };
       } else {
         setLoading(false);
+        setSharedLoading(false);
       }
     });
 
@@ -102,6 +171,85 @@ export default function DashboardPage() {
     } catch (error) {
       console.error("Error updating project:", error);
       alert("Failed to update project");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleShare = async ({ email, role }) => {
+    if (!selectedProject || !auth.currentUser) return;
+
+    const ownerId = auth.currentUser.uid;
+    const recipientEmail = email.trim().toLowerCase();
+    const ownerEmail = (auth.currentUser.email || "").trim().toLowerCase();
+
+    if (!recipientEmail) {
+      throw new Error("Enter a collaborator email address.");
+    }
+
+    if (recipientEmail === ownerEmail) {
+      throw new Error("You already own this project.");
+    }
+
+    setActionLoading(true);
+
+    try {
+      const projectRef = doc(db, "users", ownerId, "projects", selectedProject.id);
+      const accessId = `${ownerId}_${selectedProject.id}`;
+      const accessRef = doc(db, "shared_projects", recipientEmail, "projects", accessId);
+
+      await runTransaction(db, async (transaction) => {
+        const projectSnap = await transaction.get(projectRef);
+
+        if (!projectSnap.exists()) {
+          throw new Error("Project not found.");
+        }
+
+        const projectData = projectSnap.data();
+        const sharedWith = Array.isArray(projectData.shared_with)
+          ? projectData.shared_with.map((value) => String(value).toLowerCase())
+          : [];
+        const sharedPermissions = Array.isArray(projectData.shared_permissions)
+          ? projectData.shared_permissions
+          : [];
+
+        const nextSharedWith = sharedWith.includes(recipientEmail)
+          ? sharedWith
+          : [...sharedWith, recipientEmail];
+
+        const nextSharedPermissions = [
+          ...sharedPermissions.filter(
+            (permission) =>
+              String(permission?.email || "").toLowerCase() !== recipientEmail
+          ),
+          { email: recipientEmail, role },
+        ];
+
+        transaction.update(projectRef, {
+          shared_with: nextSharedWith,
+          shared_permissions: nextSharedPermissions,
+          updated_at: new Date().toISOString(),
+        });
+
+        transaction.set(
+          accessRef,
+          {
+            ownerId,
+            projectId: selectedProject.id,
+            role,
+            recipientEmail,
+            projectTitle: projectData.project_title || selectedProject.project_title || "Untitled Project",
+            sharedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      });
+
+      setShowShareModal(false);
+      setSelectedProject(null);
+    } catch (error) {
+      console.error("Error sharing project:", error);
+      throw error;
     } finally {
       setActionLoading(false);
     }
@@ -167,7 +315,7 @@ export default function DashboardPage() {
       <div className="mx-auto max-w-[1280px]">
         <header className="relative z-50 mb-6 flex flex-col gap-4 overflow-visible rounded-[28px] border border-slate-200/80 bg-white/75 p-4 shadow-[0_20px_60px_rgba(15,23,42,0.12)] backdrop-blur-xl sm:p-5 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-4">
-              <Logo/>
+            <Logo />
           </div>
 
           <div className="relative self-end lg:self-auto">
@@ -215,94 +363,158 @@ export default function DashboardPage() {
             </button>
           </div>
 
-          <div className="space-y-5">
-            {loading ? (
-              <div className="text-center py-12">
-                <p className="text-slate-600">Loading your projects...</p>
-              </div>
-            ) : visibleDocuments.length === 0 ? (
-              <div className="text-center py-12">
-                <FileText className="h-12 w-12 text-slate-300 mx-auto mb-4" />
-                <p className="text-slate-600 mb-4">No projects yet</p>
-                <button
-                  type="button"
-                  onClick={() => setShowModal(true)}
-                  className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 text-white px-4 py-2 font-medium hover:bg-indigo-700 transition"
-                >
-                  <Plus className="h-4 w-4" />
-                  Create Your First Project
-                </button>
-              </div>
-            ) : (
-              visibleDocuments.map((document) => (
-                <Link
-                  key={document.id}
-                  to={`/project/${document.id}/annotation`}
-                  className="rounded-[26px] border border-slate-200 bg-white/90 p-4 shadow-[0_14px_30px_rgba(15,23,42,0.06)] transition hover:-translate-y-0.5 hover:shadow-[0_18px_35px_rgba(15,23,42,0.08)] sm:p-5 block"
-                >
-                  <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-4">
-                        <div>
+          <div className="space-y-10">
+            <section>
+              <h3 className="mb-4 text-2xl font-black text-slate-900">My Projects</h3>
+
+              {loading ? (
+                <div className="text-center py-12">
+                  <p className="text-slate-600">Loading your projects...</p>
+                </div>
+              ) : visibleDocuments.length === 0 ? (
+                <div className="text-center py-12">
+                  <FileText className="h-12 w-12 text-slate-300 mx-auto mb-4" />
+                  <p className="text-slate-600 mb-4">No projects yet</p>
+                  <button
+                    type="button"
+                    onClick={() => setShowModal(true)}
+                    className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 text-white px-4 py-2 font-medium hover:bg-indigo-700 transition"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Create Your First Project
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-5">
+                  {visibleDocuments.map((document) => (
+                    <Link
+                      key={document.id}
+                      to={`/project/${auth.currentUser.uid}/${document.id}/annotation`}
+                      className="rounded-[26px] border border-slate-200 bg-white/90 p-4 shadow-[0_14px_30px_rgba(15,23,42,0.06)] transition hover:-translate-y-0.5 hover:shadow-[0_18px_35px_rgba(15,23,42,0.08)] sm:p-5 block"
+                    >
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="flex-1">
                           <h3 className="mt-1 text-2xl font-black text-slate-900 sm:text-[2rem]">
                             {document.project_title}
                           </h3>
+
+                          {document.metadata?.file_duration && (
+                            <div className="mt-1 text-sm text-slate-600">
+                              Duration: <span className="font-normal">{formatDuration(document.metadata.file_duration)}</span>
+                            </div>
+                          )}
+
+                          <div className="mt-1 text-sm text-slate-600">
+                            Owner: <span className="font-medium">{username}</span>
+                          </div>
+                        </div>
+
+                        <div className="flex min-w-[220px] flex-col items-start gap-2 text-left text-base text-slate-600 lg:items-end lg:text-right">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">Last accessed</span>
+                            <span>
+                              {document.last_accessed_at
+                                ? new Date(
+                                  document.last_accessed_at.toDate?.() || document.last_accessed_at
+                                ).toLocaleDateString()
+                                : "Never"}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">Created on</span>
+                            <span>
+                              {document.created_at
+                                ? new Date(document.created_at.toDate?.() || document.created_at).toLocaleDateString()
+                                : "N/A"}
+                            </span>
+                          </div>
+
+                          <div className="mt-2 flex items-center gap-2">
+                            <div onClick={(e) => e.preventDefault()}>
+                              <ProjectActionsMenu
+                                projectId={document.id}
+                                projectTitle={document.project_title}
+                                onEdit={() => {
+                                  openProjectActions(document);
+                                  setShowEditModal(true);
+                                }}
+                                onShare={() => {
+                                  openProjectActions(document);
+                                  setShowShareModal(true);
+                                }}
+                                onDelete={() => {
+                                  openProjectActions(document);
+                                  setShowDeleteModal(true);
+                                }}
+                              />
+                            </div>
+                          </div>
                         </div>
                       </div>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </section>
 
-                      {document.metadata?.file_duration && (
-                        <div className="mt-1 text-sm text-slate-600">
-                          Duration: <span className="font-normal">{formatDuration(document.metadata.file_duration)}</span>
+            <section>
+              <h3 className="mb-4 text-2xl font-black text-slate-900">Shared Projects</h3>
+
+              {sharedLoading ? (
+                <div className="rounded-[26px] border border-slate-200 bg-white/70 p-6 text-center">
+                  <p className="text-slate-600">Loading shared projects...</p>
+                </div>
+              ) : sharedProjects.length === 0 ? (
+                <div className="rounded-[26px] border border-slate-200 bg-white/70 p-6 text-center">
+                  <p className="text-slate-600">No projects have been shared with you yet.</p>
+                </div>
+              ) : (
+                <div className="space-y-5">
+                  {sharedProjects.map((document) => (
+                    <Link
+                      key={document.accessId}
+                      to={`/project/${document.ownerId}/${document.projectId}/annotation`}
+                      className="rounded-[26px] border border-slate-200 bg-white/90 p-4 shadow-[0_14px_30px_rgba(15,23,42,0.06)] transition hover:-translate-y-0.5 hover:shadow-[0_18px_35px_rgba(15,23,42,0.08)] sm:p-5 block"
+                    >
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="flex-1">
+                          <h3 className="mt-1 text-2xl font-black text-slate-900 sm:text-[2rem]">
+                            {document.project_title || "Untitled Project"}
+                          </h3>
+
+                          {document.metadata?.file_duration && (
+                            <div className="mt-1 text-sm text-slate-600">
+                              Duration: <span className="font-normal">{formatDuration(document.metadata.file_duration)}</span>
+                            </div>
+                          )}
+
+                          <div className="mt-1 text-sm text-slate-600">
+                            Shared project
+                          </div>
                         </div>
-                      )}
 
-                      <div className="mt-1 text-sm text-slate-600">
-                        Owner: <span className="font-medium">{username}</span>
-                      </div>
-                    </div>
+                        <div className="flex min-w-[220px] flex-col items-start gap-2 text-left text-base text-slate-600 lg:items-end lg:text-right">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">Permission</span>
+                            <span className="capitalize">{document.role}</span>
+                          </div>
 
-                    <div className="flex min-w-[220px] flex-col items-start gap-2 text-left text-base text-slate-600 lg:items-end lg:text-right">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">Last accessed</span>
-                        <span>
-                          {document.last_accessed_at
-                            ? new Date(
-                                document.last_accessed_at.toDate?.() || document.last_accessed_at
-                              ).toLocaleDateString()
-                            : "Never"}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">Created on</span>
-                        <span>
-                          {document.created_at
-                            ? new Date(document.created_at.toDate?.() || document.created_at).toLocaleDateString()
-                            : "N/A"}
-                        </span>
-                      </div>
-
-                      <div className="mt-2 flex items-center gap-2">
-                        <div onClick={(e) => e.preventDefault()}>
-                          <ProjectActionsMenu
-                            projectId={document.id}
-                            projectTitle={document.project_title}
-                            onEdit={() => {
-                              openProjectActions(document);
-                              setShowEditModal(true);
-                            }}
-                            onDelete={() => {
-                              openProjectActions(document);
-                              setShowDeleteModal(true);
-                            }}
-                          />
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">Created on</span>
+                            <span>
+                              {document.created_at
+                                ? new Date(document.created_at.toDate?.() || document.created_at).toLocaleDateString()
+                                : "N/A"}
+                            </span>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </div>
-                </Link>
-              ))
-            )}
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </section>
           </div>
         </main>
 
@@ -322,6 +534,18 @@ export default function DashboardPage() {
           }}
           project={selectedProject}
           onSave={handleEdit}
+          loading={actionLoading}
+        />
+
+        <ShareProjectModal
+          isOpen={showShareModal}
+          onClose={() => {
+            if (actionLoading) return;
+            setShowShareModal(false);
+            setSelectedProject(null);
+          }}
+          projectTitle={selectedProject?.project_title || ""}
+          onShare={handleShare}
           loading={actionLoading}
         />
 
