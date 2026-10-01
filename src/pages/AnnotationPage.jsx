@@ -6,7 +6,7 @@ import { ref as databaseRef, onValue, onDisconnect, set, remove, runTransaction 
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
 import Spectrogram from "wavesurfer.js/dist/plugins/spectrogram.js";
-import { Download, History, Share2, Maximize2, Search, Plus, X, Pencil, Trash2, ZoomIn, ZoomOut, ChevronDown, Scissors, FileText, Archive } from "lucide-react";
+import { Download, History, Share2, Maximize2, Search, Plus, X, Pencil, Trash2, ZoomIn, ZoomOut, ChevronDown, Scissors, FileText, Archive, Play, Pause } from "lucide-react";
 import JSZip from "jszip";
 import MiscellaneousLabelModal from "../components/MiscellaneousLabelModal";
 
@@ -3528,9 +3528,19 @@ export default function AnnotationPage() {
                 <button
                   onClick={() => wavesurferRef.current?.playPause()}
                   disabled={!audioReady}
-                  className="rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
+                  className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
                 >
-                  {isPlaying ? "⏸ Pause" : "▶ Play"}
+                  {isPlaying ? (
+                    <>
+                      <Pause className="h-4 w-4" />
+                      Pause
+                    </>
+                  ) : (
+                    <>
+                      <Play className="h-4 w-4" />
+                      Play
+                    </>
+                  )}
                 </button>
                 <button
                   onClick={handleStopPlayback}
