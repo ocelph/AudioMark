@@ -1423,8 +1423,11 @@ export default function AnnotationPage() {
 
       activeRegionRef.current = region;
 
-      const start = Number(region.start.toFixed(3));
-      const end = Number(region.end.toFixed(3));
+      const rawStart = Number(region.start.toFixed(3));
+      const rawEnd = Number(region.end.toFixed(3));
+
+      const start = Math.min(rawStart, rawEnd);
+      const end = Math.max(rawStart, rawEnd);
 
       setActiveSelection({ start, end });
 
