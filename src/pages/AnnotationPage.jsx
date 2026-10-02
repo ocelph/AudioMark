@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { auth, db, realtimeDb } from "../services/firebase";
-import { doc, getDoc, collection, addDoc, updateDoc, deleteDoc, serverTimestamp, onSnapshot, query, orderBy } from "firebase/firestore";
+import { doc, getDoc, collection, addDoc, serverTimestamp, onSnapshot, query, orderBy, writeBatch } from "firebase/firestore";
 import { ref as databaseRef, onValue, onDisconnect, set, remove, runTransaction as runRealtimeTransaction, serverTimestamp as realtimeServerTimestamp } from "firebase/database";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
@@ -2065,6 +2065,22 @@ export default function AnnotationPage() {
     }
   };
 
+  const buildAnnotationHistoryRecord = ({
+    action,
+    annotationId,
+    before = null,
+    after = null,
+  }) => ({
+    action,
+    annotationId,
+    userId: currentUserId,
+    userName: currentUserName,
+    userEmail: currentUserEmail,
+    timestamp: serverTimestamp(),
+    before,
+    after,
+  });
+
   const handleCreateAnnotation = async () => {
     if (!currentUserId) return;
 
@@ -2097,20 +2113,50 @@ export default function AnnotationPage() {
     const overlap = findOverlap(annotations, start, end, null);
     setCreateWarning(overlap ? `Heads up — this overlaps with "${overlap.label}".` : "");
 
+    const annotationData = {
+      startTime: start,
+      endTime: end,
+      label,
+      annotationClass,
+      comment: createComment.trim(),
+      authorId: currentUserId,
+      authorName: currentUserName,
+      authorEmail: currentUserEmail,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      updatedById: currentUserId,
+    };
+
     try {
-      await addDoc(collection(db, "users", ownerId, "projects", projectId, "annotations"), {
-        startTime: start,
-        endTime: end,
-        label,
-        annotationClass,
-        comment: createComment.trim(),
-        authorId: currentUserId,
-        authorName: currentUserName,
-        authorEmail: currentUserEmail,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        updatedById: currentUserId,
-      });
+      const annotationRef = doc(
+        collection(db, "users", ownerId, "projects", projectId, "annotations")
+      );
+
+      const historyRef = doc(
+        collection(db, "users", ownerId, "projects", projectId, "annotationHistory")
+      );
+
+      const batch = writeBatch(db);
+
+      batch.set(annotationRef, annotationData);
+
+      batch.set(
+        historyRef,
+        buildAnnotationHistoryRecord({
+          action: "created",
+          annotationId: annotationRef.id,
+          before: null,
+          after: {
+            startTime: start,
+            endTime: end,
+            label,
+            annotationClass,
+            comment: createComment.trim(),
+          },
+        })
+      );
+
+      await batch.commit();
 
       if (!isMountedRef.current) return;
 
@@ -2330,21 +2376,61 @@ export default function AnnotationPage() {
     const overlap = findOverlap(annotations, start, end, selectedAnnotation.id);
     setEditWarning(overlap ? `Heads up — this overlaps with "${overlap.label}".` : "");
 
+    const beforeData = {
+      startTime: selectedAnnotation.startTime,
+      endTime: selectedAnnotation.endTime,
+      label: selectedAnnotation.label,
+      annotationClass: selectedAnnotation.annotationClass || null,
+      comment: selectedAnnotation.comment || "",
+    };
+
+    const afterData = {
+      startTime: start,
+      endTime: end,
+      label: editLabel.trim(),
+      annotationClass:
+        editAnnotationClass || {
+          name: editLabel.trim(),
+          color: "#94a3b8",
+          type: "default",
+        },
+      comment: editComment.trim(),
+    };
+
     try {
-      await updateDoc(doc(db, "users", ownerId, "projects", projectId, "annotations", selectedAnnotation.id), {
-        label: editLabel.trim(),
-        annotationClass:
-          editAnnotationClass || {
-            name: editLabel.trim(),
-            color: "#94a3b8",
-            type: "default",
-          },
-        startTime: start,
-        endTime: end,
-        comment: editComment.trim(),
+      const annotationRef = doc(
+        db,
+        "users",
+        ownerId,
+        "projects",
+        projectId,
+        "annotations",
+        selectedAnnotation.id
+      );
+
+      const historyRef = doc(
+        collection(db, "users", ownerId, "projects", projectId, "annotationHistory")
+      );
+
+      const batch = writeBatch(db);
+
+      batch.update(annotationRef, {
+        ...afterData,
         updatedAt: serverTimestamp(),
         updatedById: currentUserId,
       });
+
+      batch.set(
+        historyRef,
+        buildAnnotationHistoryRecord({
+          action: "updated",
+          annotationId: selectedAnnotation.id,
+          before: beforeData,
+          after: afterData,
+        })
+      );
+
+      await batch.commit();
 
       if (!isMountedRef.current) return;
 
@@ -2396,7 +2482,42 @@ export default function AnnotationPage() {
 
   const handleConfirmDelete = async () => {
     try {
-      await deleteDoc(doc(db, "users", ownerId, "projects", projectId, "annotations", annotationToDelete.id));
+      const annotationRef = doc(
+        db,
+        "users",
+        ownerId,
+        "projects",
+        projectId,
+        "annotations",
+        annotationToDelete.id
+      );
+
+      const historyRef = doc(
+        collection(db, "users", ownerId, "projects", projectId, "annotationHistory")
+      );
+
+      const batch = writeBatch(db);
+
+      batch.delete(annotationRef);
+
+      batch.set(
+        historyRef,
+        buildAnnotationHistoryRecord({
+          action: "deleted",
+          annotationId: annotationToDelete.id,
+          before: {
+            startTime: annotationToDelete.startTime,
+            endTime: annotationToDelete.endTime,
+            label: annotationToDelete.label,
+            annotationClass: annotationToDelete.annotationClass || null,
+            comment: annotationToDelete.comment || "",
+          },
+          after: null,
+        })
+      );
+
+      await batch.commit();
+
       if (!isMountedRef.current) return;
 
       if (exportSelectedAnnotationId === annotationToDelete.id) {
