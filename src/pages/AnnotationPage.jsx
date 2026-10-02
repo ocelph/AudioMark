@@ -9,6 +9,7 @@ import Spectrogram from "wavesurfer.js/dist/plugins/spectrogram.js";
 import { Download, History, Share2, Maximize2, Search, Plus, X, Pencil, Trash2, ZoomIn, ZoomOut, ChevronDown, Scissors, FileText, Archive } from "lucide-react";
 import JSZip from "jszip";
 import MiscellaneousLabelModal from "../components/MiscellaneousLabelModal";
+import ShareProjectModal from "../components/ShareProjectModal";
 
 
 // Built-in annotation class choices.
@@ -806,6 +807,9 @@ export default function AnnotationPage() {
   const [syncMessage, setSyncMessage] = useState("");
   const [audioUrl, setAudioUrl] = useState(null);
   const [fileName, setFileName] = useState("");
+  const [sharedWith, setSharedWith] = useState([]);
+  const [sharedPermissions, setSharedPermissions] = useState([]);
+  const [showShareModal, setShowShareModal] = useState(false);
   const [annotations, setAnnotations] = useState([]);
   const [selectedAnnotation, setSelectedAnnotation] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
@@ -984,8 +988,9 @@ export default function AnnotationPage() {
           navigate("/login");
           return;
         }
+        const projectRef = doc(db, "users", ownerId, "projects", projectId);
         const [projectSnap, currentUserSnap] = await Promise.all([
-          getDoc(doc(db, "users", ownerId, "projects", projectId)),
+          getDoc(projectRef),
           getDoc(doc(db, "users", user.uid)),
         ]);
         if (!isMountedRef.current) return;
@@ -1007,6 +1012,14 @@ export default function AnnotationPage() {
           const data = projectSnap.data();
           setFileName(data.project_title);
           setAudioUrl(data.download_url);
+          setSharedWith(Array.isArray(data.shared_with) ? data.shared_with : []);
+          setSharedPermissions(Array.isArray(data.shared_permissions) ? data.shared_permissions : []);
+          const lastAccessedAt = new Date().toISOString();
+          updateDoc(projectRef, {
+            [`last_accessed_by.${user.uid}`]: lastAccessedAt,
+          }).catch((err) => {
+            console.error("Failed to update last accessed date:", err);
+          });
         } else {
           setError("Project not found.");
         }
@@ -3058,9 +3071,15 @@ export default function AnnotationPage() {
           <button className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 transition">
             <History className="h-4 w-4" /> Log History
           </button>
-          <button className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 transition">
-            <Share2 className="h-4 w-4" /> Share
-          </button>
+          {currentUserId === ownerId && (
+            <button
+              type="button"
+              onClick={() => setShowShareModal(true)}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 transition hover:bg-slate-50"
+            >
+              <Share2 className="h-4 w-4" /> Share
+            </button>
+          )}
           <button className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 transition">
             <Maximize2 className="h-4 w-4" /> Expand All Annotations
           </button>
@@ -4224,6 +4243,21 @@ export default function AnnotationPage() {
           </div>
         </div>
       )}
+
+      <ShareProjectModal
+        isOpen={showShareModal}
+        onClose={() => setShowShareModal(false)}
+        projectId={projectId}
+        ownerId={ownerId}
+        projectTitle={fileName}
+        ownerName={currentUserName}
+        sharedWith={sharedWith}
+        sharedPermissions={sharedPermissions}
+        onSharedWithChange={(nextSharedWith, nextSharedPermissions) => {
+          setSharedWith(nextSharedWith);
+          setSharedPermissions(nextSharedPermissions);
+        }}
+      />
     </div>
   );
 }

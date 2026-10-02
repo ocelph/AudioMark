@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { X, Plus, Upload, AlertCircle } from "lucide-react";
 import { auth, db, storage } from "../services/firebase";
-import { collection, addDoc, serverTimestamp } from "firebase/firestore";
+import { collection, addDoc, serverTimestamp, doc, getDoc, getDocs } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 const SUPPORTED_AUDIO_EXTENSIONS = ["wav", "mp3", "flac", "ogg", "webm", "m4a"];
@@ -11,9 +11,14 @@ const getFileExtension = (fileName) =>
 
 const formatDuration = (seconds) => {
   if (!Number.isFinite(seconds)) return "00:00";
+  const hours = Math.floor(seconds / 3600);
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
-  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  if (hours === 0) {
+    return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+
+  return `${String(hours).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
 };
 
 const hasAudioSignature = (bytes) => {
@@ -37,6 +42,7 @@ const hasAudioSignature = (bytes) => {
 };
 
 export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
+  const fileInputRef = useRef(null);
   const [formData, setFormData] = useState({
     project_title: "",
     description: "",
@@ -47,6 +53,24 @@ export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [filePreview, setFilePreview] = useState(null);
+
+  const resetForm = () => {
+    setFormData({
+      project_title: "",
+      description: "",
+      audioFile: null,
+      audioDuration: null,
+    });
+    setError(null);
+    setFilePreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleClose = () => {
+    if (loading) return;
+    resetForm();
+    onClose();
+  };
 
   const handleTitleChange = (e) => {
     setFormData((prev) => ({ ...prev, project_title: e.target.value }));
@@ -158,6 +182,10 @@ export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
         return;
       }
 
+      const userSnapshot = await getDoc(doc(db, "users", user.uid));
+      const ownerName =
+        userSnapshot.data()?.firstName || user.displayName?.split(" ")[0] || "owner";
+
       if (!formData.project_title.trim()) {
         setError("Project title is required");
         setLoading(false);
@@ -180,6 +208,19 @@ export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
         return;
       }
 
+      const projectsRef = collection(db, "users", user.uid, "projects");
+      const existingProjects = await getDocs(projectsRef);
+      const normalizedTitle = formData.project_title.trim().toLowerCase();
+      const titleExists = existingProjects.docs.some(
+        (projectDoc) =>
+          (projectDoc.data().project_title || "").trim().toLowerCase() === normalizedTitle
+      );
+
+      if (titleExists) {
+        setError("A project with this title already exists");
+        return;
+      }
+
       const fileName = `${user.uid}/${formData.project_title.replace(
         /\s+/g,
         "_"
@@ -198,11 +239,11 @@ export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
         original_file_name: formData.audioFile.name,
       };
 
-      const projectsRef = collection(db, "users", user.uid, "projects");
-
       await addDoc(projectsRef, {
         project_title: formData.project_title.trim(),
         description: formData.description.trim() || null,
+        owner_name: ownerName,
+        shared_with: [],
         storage_path: storagePath,
         download_url: downloadUrl,
         metadata: audioMeta,
@@ -210,15 +251,8 @@ export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
         updated_at: serverTimestamp(),
       });
 
-      setFormData({
-        project_title: "",
-        description: "",
-        audioFile: null,
-        audioDuration: null,
-      });
-
-      setFilePreview(null);
       onProjectAdded?.();
+      resetForm();
       onClose();
     } catch (err) {
       console.error("Error creating project:", err);
@@ -241,7 +275,7 @@ export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl">
+      <div className="max-h-[calc(100vh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl bg-white shadow-2xl">
         <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
           <h2 className="text-xl font-bold text-slate-900">
             Create New Project
@@ -249,7 +283,8 @@ export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
 
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
+            disabled={loading}
             className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
             aria-label="Close"
           >
@@ -294,6 +329,7 @@ export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
 
             <div className="relative">
               <input
+                ref={fileInputRef}
                 type="file"
                 accept=".wav,.mp3,.flac,.ogg,.webm,.m4a"
                 // accept="*/*"
@@ -314,15 +350,15 @@ export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
               </label>
 
               <p className="mt-1 text-xs text-slate-500">
-                WAV, MP3, FLAC, OGG, WebM, M4A
+                WAV, MP3, FLAC, OGG, WebM, M4A (Convert your audio file into a supported type)
               </p>
             </div>
 
             {filePreview && (
               <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
                 <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-emerald-900">
+                  <div className="min-w-0 flex-1">
+                    <p className="break-words text-sm font-medium text-emerald-900">
                       {filePreview.name}
                     </p>
                     <p className="mt-0.5 text-xs text-emerald-700">
@@ -348,9 +384,7 @@ export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
                       }));
                       setFilePreview(null);
 
-                      const input =
-                        document.getElementById("audio-file-input");
-                      if (input) input.value = "";
+                      if (fileInputRef.current) fileInputRef.current.value = "";
                     }}
                     className="text-xs font-medium text-emerald-600 hover:text-emerald-700"
                   >
@@ -371,7 +405,7 @@ export default function AddProjectModal({ isOpen, onClose, onProjectAdded }) {
           <div className="flex gap-3 pt-4">
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleClose}
               disabled={loading}
               className="flex-1 rounded-lg border border-slate-200 px-4 py-2.5 font-medium text-slate-700 transition hover:bg-slate-50"
             >
