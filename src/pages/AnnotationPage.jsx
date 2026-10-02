@@ -842,6 +842,11 @@ export default function AnnotationPage() {
   const wavesurferRef = useRef(null);
   const regionsRef = useRef(null);
   const activeRegionRef = useRef(null);
+  const spectrogramDragRef = useRef({
+  isDragging: false,
+  anchorTime: 0,
+  region: null,
+});
   const syncingRegionRef = useRef(false);
   const editingRegionRef = useRef(false);
   const activeEditLockRef = useRef(null);
@@ -1636,6 +1641,147 @@ export default function AnnotationPage() {
     const nextLevel = ZOOM_LEVELS[nextIndex];
     setZoomLevel(nextLevel);
     applyZoomLevel(nextLevel);
+  };
+
+    const getSpectrogramTimeFromPointer = (event) => {
+    const viewport = spectrogramViewportRef.current;
+
+    if (!viewport || duration <= 0) {
+      return 0;
+    }
+
+    const rect = viewport.getBoundingClientRect();
+
+    const x =
+      event.clientX -
+      rect.left +
+      viewport.scrollLeft;
+
+    const totalWidth = Math.max(
+      viewport.scrollWidth,
+      rect.width
+    );
+
+    const ratio = x / totalWidth;
+    const time = ratio * duration;
+
+    return Math.min(
+      duration,
+      Math.max(0, time)
+    );
+  };
+
+  const handleSpectrogramPointerDown = (event) => {
+    if (!audioReady || event.button !== 0) return;
+
+    event.preventDefault();
+
+    const anchorTime =
+      getSpectrogramTimeFromPointer(event);
+
+    spectrogramDragRef.current = {
+      isDragging: true,
+      anchorTime,
+      region: null,
+    };
+
+    event.currentTarget.setPointerCapture?.(
+      event.pointerId
+    );
+  };
+
+  const handleSpectrogramPointerMove = (event) => {
+    const drag = spectrogramDragRef.current;
+
+    if (!drag.isDragging) return;
+
+    const regions = regionsRef.current;
+
+    if (!regions) return;
+
+    const pointerTime =
+      getSpectrogramTimeFromPointer(event);
+
+    const start = Math.min(
+      drag.anchorTime,
+      pointerTime
+    );
+
+    const end = Math.max(
+      drag.anchorTime,
+      pointerTime
+    );
+
+    if (end - start < TIME_EPSILON) {
+      return;
+    }
+
+    if (!drag.region) {
+      const previous = activeRegionRef.current;
+
+      if (previous) {
+        previous.remove();
+      }
+
+      const newRegion = regions.addRegion({
+        start,
+        end,
+        color: "rgba(99, 102, 241, 0.25)",
+        drag: true,
+        resize: true,
+      });
+
+      drag.region = newRegion;
+      activeRegionRef.current = newRegion;
+    } else {
+      drag.region.setOptions({
+        start,
+        end,
+      });
+    }
+
+    const normalisedStart =
+      Number(start.toFixed(3));
+
+    const normalisedEnd =
+      Number(end.toFixed(3));
+
+    setActiveSelection({
+      start: normalisedStart,
+      end: normalisedEnd,
+    });
+
+    if (editingRegionRef.current) {
+      setEditStart(normalisedStart);
+      setEditEnd(normalisedEnd);
+    } else {
+      setCreateStart(normalisedStart);
+      setCreateEnd(normalisedEnd);
+    }
+  };
+
+  const handleSpectrogramPointerUp = (event) => {
+    const drag = spectrogramDragRef.current;
+
+    if (!drag.isDragging) return;
+
+    event.currentTarget.releasePointerCapture?.(
+      event.pointerId
+    );
+
+    spectrogramDragRef.current = {
+      isDragging: false,
+      anchorTime: 0,
+      region: null,
+    };
+  };
+
+  const handleSpectrogramPointerCancel = () => {
+    spectrogramDragRef.current = {
+      isDragging: false,
+      anchorTime: 0,
+      region: null,
+    };
   };
 
   const clampToDuration = (time) => {
@@ -3463,7 +3609,11 @@ export default function AnnotationPage() {
 
               <div
                 ref={spectrogramViewportRef}
-                className="w-full overflow-hidden bg-slate-950"
+                onPointerDown={handleSpectrogramPointerDown}
+                onPointerMove={handleSpectrogramPointerMove}
+                onPointerUp={handleSpectrogramPointerUp}
+                onPointerCancel={handleSpectrogramPointerCancel}
+                className="w-full cursor-crosshair overflow-hidden bg-slate-950"
               >
                 <div
                   className="relative min-w-full"
