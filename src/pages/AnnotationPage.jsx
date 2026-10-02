@@ -817,6 +817,11 @@ export default function AnnotationPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [annotationToDelete, setAnnotationToDelete] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [showLogHistory, setShowLogHistory] = useState(false);  // annotation history viewer state.
+  const [annotationHistory, setAnnotationHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -1279,6 +1284,44 @@ export default function AnnotationPage() {
     );
     return () => unsubscribe();
   }, [ownerId, projectId]);
+
+  // Load annotation history only while the Log History modal is open.
+  useEffect(() => {
+    if (!showLogHistory || !ownerId || !projectId) return;
+
+    setHistoryLoading(true);
+    setHistoryError("");
+
+    const historyQuery = query(
+      collection(db, "users", ownerId, "projects", projectId, "annotationHistory"),
+      orderBy("timestamp", "desc")
+    );
+
+    const unsubscribe = onSnapshot(
+      historyQuery,
+      (snapshot) => {
+        if (!isMountedRef.current) return;
+
+        setAnnotationHistory(
+          snapshot.docs.map((historyDoc) => ({
+            id: historyDoc.id,
+            ...historyDoc.data(),
+          }))
+        );
+        setHistoryLoading(false);
+      },
+      (error) => {
+        console.error("Failed to load annotation history:", error);
+        if (!isMountedRef.current) return;
+        setHistoryError(
+          "Unable to load annotation history. Check your Firebase access and Firestore permissions."
+        );
+        setHistoryLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [showLogHistory, ownerId, projectId]);
 
   // Close the edit panel if the annotation currently being edited no longer exists.
   useEffect(() => {
@@ -3330,7 +3373,11 @@ export default function AnnotationPage() {
               </div>
             )}
           </div>
-          <button className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 transition">
+          <button
+            type="button"
+            onClick={() => setShowLogHistory(true)}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 transition"
+          >
             <History className="h-4 w-4" /> Log History
           </button>
           <button className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 transition">
@@ -4482,6 +4529,125 @@ export default function AnnotationPage() {
                   Done
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ADP-123: Annotation log history modal */}
+      {showLogHistory && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[85vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-800">Annotation Log History</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  Created, edited and deleted annotation changes for this project.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowLogHistory(false)}
+                className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                aria-label="Close annotation log history"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto p-6">
+              {historyLoading ? (
+                <p className="py-10 text-center text-sm text-slate-500">Loading annotation history...</p>
+              ) : historyError ? (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {historyError}
+                </div>
+              ) : annotationHistory.length === 0 ? (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">
+                  No annotation history has been recorded yet.
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+                    <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                      <tr>
+                        <th className="px-4 py-3">Date / Time</th>
+                        <th className="px-4 py-3">Action</th>
+                        <th className="px-4 py-3">User</th>
+                        <th className="px-4 py-3">Annotation</th>
+                        <th className="px-4 py-3">Change</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {annotationHistory.map((entry) => {
+                        const entryDate = entry.timestamp?.toDate?.();
+                        const displayDate = entryDate
+                          ? entryDate.toLocaleString()
+                          : "Pending timestamp";
+                        const annotationData = entry.after || entry.before || {};
+                        const actionLabel =
+                          entry.action === "created"
+                            ? "Created"
+                            : entry.action === "updated"
+                              ? "Updated"
+                              : entry.action === "deleted"
+                                ? "Deleted"
+                                : entry.action || "Unknown";
+
+                        return (
+                          <tr key={entry.id} className="align-top">
+                            <td className="whitespace-nowrap px-4 py-3 text-slate-600">
+                              {displayDate}
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
+                                {actionLabel}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-slate-600">
+                              <div className="font-medium text-slate-700">
+                                {entry.userName || entry.userEmail || "Unknown user"}
+                              </div>
+                              {entry.userName && entry.userEmail && (
+                                <div className="mt-0.5 text-xs text-slate-400">{entry.userEmail}</div>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-slate-600">
+                              <div className="font-medium text-slate-700">
+                                {annotationData.label || "Unlabelled annotation"}
+                              </div>
+                              {Number.isFinite(Number(annotationData.startTime)) &&
+                                Number.isFinite(Number(annotationData.endTime)) && (
+                                  <div className="mt-1 text-xs tabular-nums text-slate-400">
+                                    {formatTimestamp(annotationData.startTime)} → {formatTimestamp(annotationData.endTime)}
+                                  </div>
+                                )}
+                            </td>
+                            <td className="min-w-[260px] px-4 py-3 text-slate-600">
+                              {entry.action === "updated" ? (
+                                <div className="space-y-1 text-xs">
+                                  <div>
+                                    <span className="font-semibold text-slate-500">Before:</span>{" "}
+                                    {entry.before?.label || "Unlabelled"}, {formatTimestamp(entry.before?.startTime)} → {formatTimestamp(entry.before?.endTime)}
+                                  </div>
+                                  <div>
+                                    <span className="font-semibold text-slate-500">After:</span>{" "}
+                                    {entry.after?.label || "Unlabelled"}, {formatTimestamp(entry.after?.startTime)} → {formatTimestamp(entry.after?.endTime)}
+                                  </div>
+                                </div>
+                              ) : entry.action === "deleted" ? (
+                                <span className="text-xs">Annotation deleted</span>
+                              ) : (
+                                <span className="text-xs">Annotation created</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         </div>
