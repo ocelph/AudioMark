@@ -56,8 +56,11 @@ export default function ShareProjectModal({
         shared_permissions: arrayUnion(newPermission),
       });
       const projectSnapshot = await getDoc(projectRef);
+      const projectData = projectSnapshot.data();
+      delete projectData.last_accessed_by;
+      delete projectData.last_accessed_at;
       await setDoc(accessRef(normalizedEmail), {
-        ...projectSnapshot.data(),
+        ...projectData,
         ownerId,
         projectId,
         projectTitle,

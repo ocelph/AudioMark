@@ -109,6 +109,9 @@ export default function DashboardPage() {
           }));
           snapshot.docs.forEach((projectDoc) => {
             const project = projectDoc.data();
+            const projectIndexData = { ...project };
+            delete projectIndexData.last_accessed_by;
+            delete projectIndexData.last_accessed_at;
             (project.shared_with || []).forEach((recipient) => {
               const permission = (project.shared_permissions || []).find(
                 (item) => item.email === recipient
@@ -116,7 +119,7 @@ export default function DashboardPage() {
               setDoc(
                 doc(db, "shared_projects", recipient, "projects", `${user.uid}_${projectDoc.id}`),
                 {
-                  ...project,
+                  ...projectIndexData,
                   ownerId: user.uid,
                   projectId: projectDoc.id,
                   projectTitle: project.project_title || "",
@@ -149,7 +152,7 @@ export default function DashboardPage() {
                 doc(db, "users", ownerId, "projects", access.projectId)
               );
               if (projectSnapshot.exists()) {
-                project = { ...project, ...projectSnapshot.data() };
+                project = { ...projectSnapshot.data(), ...project };
               }
             }
 
@@ -195,14 +198,16 @@ export default function DashboardPage() {
         return true;
       })
       .sort((first, second) => {
-      const firstDate = timestampToMillis(
-        first.last_accessed_by?.[currentUserId] || first.last_accessed_at || first.created_at
-      );
-      const secondDate = timestampToMillis(
-        second.last_accessed_by?.[currentUserId] || second.last_accessed_at || second.created_at
-      );
+        const firstCreatedAt = timestampToMillis(first.created_at);
+        const secondCreatedAt = timestampToMillis(second.created_at);
+        const firstDate = timestampToMillis(
+          first.last_accessed_by?.[currentUserId] || first.last_accessed_at || first.created_at
+        );
+        const secondDate = timestampToMillis(
+          second.last_accessed_by?.[currentUserId] || second.last_accessed_at || second.created_at
+        );
 
-        return secondDate - firstDate;
+        return secondDate - firstDate || secondCreatedAt - firstCreatedAt;
       });
   }, [projects, projectFilter, currentUserId]);
 

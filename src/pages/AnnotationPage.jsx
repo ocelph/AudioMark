@@ -809,7 +809,9 @@ export default function AnnotationPage() {
   const [fileName, setFileName] = useState("");
   const [sharedWith, setSharedWith] = useState([]);
   const [sharedPermissions, setSharedPermissions] = useState([]);
+  const [projectRole, setProjectRole] = useState("viewer");
   const [showShareModal, setShowShareModal] = useState(false);
+  const [lastAccessError, setLastAccessError] = useState("");
   const [annotations, setAnnotations] = useState([]);
   const [selectedAnnotation, setSelectedAnnotation] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
@@ -839,6 +841,7 @@ export default function AnnotationPage() {
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const canEditAnnotations = currentUserId === ownerId || projectRole === "editor";
 
   const waveformRef = useRef(null);
   const spectrogramRef = useRef(null);
@@ -1010,16 +1013,49 @@ export default function AnnotationPage() {
 
         if (projectSnap.exists()) {
           const data = projectSnap.data();
+          const projectPermissions = Array.isArray(data.shared_permissions)
+            ? data.shared_permissions
+            : [];
           setFileName(data.project_title);
           setAudioUrl(data.download_url);
           setSharedWith(Array.isArray(data.shared_with) ? data.shared_with : []);
-          setSharedPermissions(Array.isArray(data.shared_permissions) ? data.shared_permissions : []);
-          const lastAccessedAt = new Date().toISOString();
-          updateDoc(projectRef, {
-            [`last_accessed_by.${user.uid}`]: lastAccessedAt,
-          }).catch((err) => {
-            console.error("Failed to update last accessed date:", err);
-          });
+          setSharedPermissions(projectPermissions);
+          const normalizedUserEmail = (
+            user.email || currentUserProfile.email || ""
+          ).toLowerCase();
+          const userPermission = projectPermissions.find(
+            (permission) =>
+              permission.email?.toLowerCase() === normalizedUserEmail
+          );
+          setProjectRole(user.uid === ownerId ? "editor" : userPermission?.role || "viewer");
+          const lastAccessedRef =
+            user.uid === ownerId
+              ? projectRef
+              : normalizedUserEmail
+                ? doc(
+                  db,
+                  "shared_projects",
+                  normalizedUserEmail,
+                  "projects",
+                  `${ownerId}_${projectId}`
+                )
+                : null;
+
+          if (lastAccessedRef) {
+            updateDoc(lastAccessedRef, {
+              [`last_accessed_by.${user.uid}`]: serverTimestamp(),
+            }).catch((err) => {
+              console.error("Failed to update last accessed date:", err);
+              if (isMountedRef.current) {
+                setLastAccessError(
+                  `Last accessed time could not be saved (${err.code || "unknown error"}).`
+                );
+              }
+            });
+          } else {
+            console.error("Failed to update last accessed date: signed-in user has no email.");
+            setLastAccessError("Last accessed time could not be saved: signed-in user has no email.");
+          }
         } else {
           setError("Project not found.");
         }
@@ -1925,7 +1961,7 @@ export default function AnnotationPage() {
   };
 
   const handleCreateAnnotation = async () => {
-    if (!currentUserId) return;
+    if (!currentUserId || !canEditAnnotations) return;
 
     const start = parseFloat(createStart);
     const end = parseFloat(createEnd);
@@ -2070,7 +2106,7 @@ export default function AnnotationPage() {
   };
 
   const handleEditOpen = async (annotation) => {
-    if (!currentUserId || !ownerId || !projectId || !annotation?.id) return;
+    if (!canEditAnnotations || !currentUserId || !ownerId || !projectId || !annotation?.id) return;
 
     setEditLockNotice("");
 
@@ -2176,6 +2212,8 @@ export default function AnnotationPage() {
 
   // Save annotation edits to Firestore
   const handleSaveEdit = async () => {
+    if (!canEditAnnotations || !selectedAnnotation) return;
+
     const start = parseFloat(editStart);
     const end = parseFloat(editEnd);
 
@@ -2249,11 +2287,14 @@ export default function AnnotationPage() {
   };
 
   const handleDeleteClick = (annotation) => {
+    if (!canEditAnnotations) return;
     setAnnotationToDelete(annotation);
     setShowDeleteConfirm(true);
   };
 
   const handleConfirmDelete = async () => {
+    if (!canEditAnnotations || !annotationToDelete) return;
+
     try {
       await deleteDoc(doc(db, "users", ownerId, "projects", projectId, "annotations", annotationToDelete.id));
       if (!isMountedRef.current) return;
@@ -3086,6 +3127,12 @@ export default function AnnotationPage() {
         </div>
       </div>
 
+      {lastAccessError && (
+        <div role="alert" className="border-b border-amber-200 bg-amber-50 px-6 py-2 text-sm text-amber-800">
+          {lastAccessError} Check the Firestore permissions for this project.
+        </div>
+      )}
+
       {/* Export feedback */}
       {exportFeedback && (
         <div
@@ -3157,6 +3204,8 @@ export default function AnnotationPage() {
           {createErrors.start && <p className="mb-2 text-xs text-red-500">{createErrors.start}</p>}
           {createErrors.end && <p className="mb-2 text-xs text-red-500">{createErrors.end}</p>}
 
+          {canEditAnnotations && (
+            <>
           <h2 className="mb-2 mt-2 text-sm font-semibold text-slate-700">Annotation Class</h2>
 
           <div className="mb-2 flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5 focus-within:ring-2 focus-within:ring-indigo-200">
@@ -3378,6 +3427,13 @@ export default function AnnotationPage() {
           <p className="mt-2 text-xs text-slate-400">
             Drag across the waveform to populate the timestamps, then refine them here if needed.
           </p>
+            </>
+          )}
+          {!canEditAnnotations && (
+            <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+              Select or drag on the waveform to view times. Viewer access does not allow changing annotations.
+            </p>
+          )}
         </div>
 
         {/* Drag handle — resize left panel */}
@@ -3634,7 +3690,7 @@ export default function AnnotationPage() {
                       <th className="px-3 py-2">Label</th>
                       <th className="px-3 py-2">Author</th>
                       <th className="px-3 py-2">Comments</th>
-                      <th className="px-3 py-2">Actions</th>
+                      {canEditAnnotations && <th className="px-3 py-2">Actions</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -3684,26 +3740,30 @@ export default function AnnotationPage() {
                               </div>
                             </td>
                             <td className="max-w-[220px] truncate px-3 py-2 text-slate-500">{ann.comment}</td>
-                            <td className="px-3 py-2">
-                              <div className="flex items-center gap-1">
-                                <button
-                                  onClick={() => handleEditOpen(ann)}
-                                  className="rounded-lg p-1.5 text-slate-400 hover:bg-indigo-50 hover:text-indigo-600 transition"
-                                  title="Edit annotation"
-                                  aria-label={`Edit ${ann.label || "annotation"}`}
-                                >
-                                  <Pencil className="h-4 w-4" />
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteClick(ann)}
-                                  className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-500 transition"
-                                  title="Delete annotation"
-                                  aria-label={`Delete ${ann.label || "annotation"}`}
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </button>
-                              </div>
-                            </td>
+                            {canEditAnnotations && (
+                              <td className="px-3 py-2">
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleEditOpen(ann)}
+                                    className="rounded-lg p-1.5 text-slate-400 transition hover:bg-indigo-50 hover:text-indigo-600"
+                                    title="Edit annotation"
+                                    aria-label={`Edit ${ann.label || "annotation"}`}
+                                  >
+                                    <Pencil className="h-4 w-4" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteClick(ann)}
+                                    className="rounded-lg p-1.5 text-slate-400 transition hover:bg-red-50 hover:text-red-500"
+                                    title="Delete annotation"
+                                    aria-label={`Delete ${ann.label || "annotation"}`}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </button>
+                                </div>
+                              </td>
+                            )}
                           </tr>
                         );
                       })}
