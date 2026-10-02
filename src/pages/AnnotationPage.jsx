@@ -1463,6 +1463,10 @@ export default function AnnotationPage() {
       syncFormFromRegion(region);
     });
 
+    const unsubRegionUpdate = regions.on("region-update", (region) => {
+      syncFormFromRegion(region);
+    });
+
     const unsubRegionUpdated = regions.on("region-updated", (region) => {
       syncFormFromRegion(region);
     });
@@ -1493,6 +1497,7 @@ export default function AnnotationPage() {
       unsubScroll?.();
       unsubRegionCreated?.();
       unsubRegionClicked?.();
+      unsubRegionUpdate?.();
       unsubRegionUpdated?.();
       unsubPlay?.();
       unsubPause?.();
