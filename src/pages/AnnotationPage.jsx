@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { auth, db, realtimeDb } from "../services/firebase";
-import { doc, getDoc, collection, addDoc, updateDoc, deleteDoc, serverTimestamp, onSnapshot, query, orderBy } from "firebase/firestore";
+import { doc, getDoc, collection, addDoc, serverTimestamp, onSnapshot, query, orderBy, writeBatch } from "firebase/firestore";
 import { ref as databaseRef, onValue, onDisconnect, set, remove, runTransaction as runRealtimeTransaction, serverTimestamp as realtimeServerTimestamp } from "firebase/database";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
 import Spectrogram from "wavesurfer.js/dist/plugins/spectrogram.js";
-import { Download, History, Share2, Maximize2, Search, Plus, X, Pencil, Trash2, ZoomIn, ZoomOut, ChevronDown, Scissors, FileText, Archive } from "lucide-react";
+import { Download, History, Share2, Maximize2, Search, Plus, X, Pencil, Trash2, ZoomIn, ZoomOut, ChevronDown, Scissors, FileText, Archive, Play, Pause } from "lucide-react";
 import JSZip from "jszip";
 import MiscellaneousLabelModal from "../components/MiscellaneousLabelModal";
 import ShareProjectModal from "../components/ShareProjectModal";
@@ -823,6 +823,11 @@ export default function AnnotationPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [annotationToDelete, setAnnotationToDelete] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [showLogHistory, setShowLogHistory] = useState(false);  // annotation history viewer state.
+  const [annotationHistory, setAnnotationHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -849,6 +854,11 @@ export default function AnnotationPage() {
   const wavesurferRef = useRef(null);
   const regionsRef = useRef(null);
   const activeRegionRef = useRef(null);
+  const spectrogramDragRef = useRef({
+  isDragging: false,
+  anchorTime: 0,
+  region: null,
+});
   const syncingRegionRef = useRef(false);
   const editingRegionRef = useRef(false);
   const activeEditLockRef = useRef(null);
@@ -1324,6 +1334,44 @@ export default function AnnotationPage() {
     return () => unsubscribe();
   }, [ownerId, projectId]);
 
+  // Load annotation history only while the Log History modal is open.
+  useEffect(() => {
+    if (!showLogHistory || !ownerId || !projectId) return;
+
+    setHistoryLoading(true);
+    setHistoryError("");
+
+    const historyQuery = query(
+      collection(db, "users", ownerId, "projects", projectId, "annotationHistory"),
+      orderBy("timestamp", "desc")
+    );
+
+    const unsubscribe = onSnapshot(
+      historyQuery,
+      (snapshot) => {
+        if (!isMountedRef.current) return;
+
+        setAnnotationHistory(
+          snapshot.docs.map((historyDoc) => ({
+            id: historyDoc.id,
+            ...historyDoc.data(),
+          }))
+        );
+        setHistoryLoading(false);
+      },
+      (error) => {
+        console.error("Failed to load annotation history:", error);
+        if (!isMountedRef.current) return;
+        setHistoryError(
+          "Unable to load annotation history. Check your Firebase access and Firestore permissions."
+        );
+        setHistoryLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [showLogHistory, ownerId, projectId]);
+
   // Close the edit panel if the annotation currently being edited no longer exists.
   useEffect(() => {
     if (!isEditing || !selectedAnnotation?.id) return;
@@ -1472,8 +1520,11 @@ export default function AnnotationPage() {
 
       activeRegionRef.current = region;
 
-      const start = Number(region.start.toFixed(3));
-      const end = Number(region.end.toFixed(3));
+      const rawStart = Number(region.start.toFixed(3));
+      const rawEnd = Number(region.end.toFixed(3));
+
+      const start = Math.min(rawStart, rawEnd);
+      const end = Math.max(rawStart, rawEnd);
 
       setActiveSelection({ start, end });
 
@@ -1512,6 +1563,10 @@ export default function AnnotationPage() {
       syncFormFromRegion(region);
     });
 
+    const unsubRegionUpdate = regions.on("region-update", (region) => {
+      syncFormFromRegion(region);
+    });
+
     const unsubRegionUpdated = regions.on("region-updated", (region) => {
       syncFormFromRegion(region);
     });
@@ -1542,6 +1597,7 @@ export default function AnnotationPage() {
       unsubScroll?.();
       unsubRegionCreated?.();
       unsubRegionClicked?.();
+      unsubRegionUpdate?.();
       unsubRegionUpdated?.();
       unsubPlay?.();
       unsubPause?.();
@@ -1677,6 +1733,147 @@ export default function AnnotationPage() {
     const nextLevel = ZOOM_LEVELS[nextIndex];
     setZoomLevel(nextLevel);
     applyZoomLevel(nextLevel);
+  };
+
+    const getSpectrogramTimeFromPointer = (event) => {
+    const viewport = spectrogramViewportRef.current;
+
+    if (!viewport || duration <= 0) {
+      return 0;
+    }
+
+    const rect = viewport.getBoundingClientRect();
+
+    const x =
+      event.clientX -
+      rect.left +
+      viewport.scrollLeft;
+
+    const totalWidth = Math.max(
+      viewport.scrollWidth,
+      rect.width
+    );
+
+    const ratio = x / totalWidth;
+    const time = ratio * duration;
+
+    return Math.min(
+      duration,
+      Math.max(0, time)
+    );
+  };
+
+  const handleSpectrogramPointerDown = (event) => {
+    if (!audioReady || event.button !== 0) return;
+
+    event.preventDefault();
+
+    const anchorTime =
+      getSpectrogramTimeFromPointer(event);
+
+    spectrogramDragRef.current = {
+      isDragging: true,
+      anchorTime,
+      region: null,
+    };
+
+    event.currentTarget.setPointerCapture?.(
+      event.pointerId
+    );
+  };
+
+  const handleSpectrogramPointerMove = (event) => {
+    const drag = spectrogramDragRef.current;
+
+    if (!drag.isDragging) return;
+
+    const regions = regionsRef.current;
+
+    if (!regions) return;
+
+    const pointerTime =
+      getSpectrogramTimeFromPointer(event);
+
+    const start = Math.min(
+      drag.anchorTime,
+      pointerTime
+    );
+
+    const end = Math.max(
+      drag.anchorTime,
+      pointerTime
+    );
+
+    if (end - start < TIME_EPSILON) {
+      return;
+    }
+
+    if (!drag.region) {
+      const previous = activeRegionRef.current;
+
+      if (previous) {
+        previous.remove();
+      }
+
+      const newRegion = regions.addRegion({
+        start,
+        end,
+        color: "rgba(99, 102, 241, 0.25)",
+        drag: true,
+        resize: true,
+      });
+
+      drag.region = newRegion;
+      activeRegionRef.current = newRegion;
+    } else {
+      drag.region.setOptions({
+        start,
+        end,
+      });
+    }
+
+    const normalisedStart =
+      Number(start.toFixed(3));
+
+    const normalisedEnd =
+      Number(end.toFixed(3));
+
+    setActiveSelection({
+      start: normalisedStart,
+      end: normalisedEnd,
+    });
+
+    if (editingRegionRef.current) {
+      setEditStart(normalisedStart);
+      setEditEnd(normalisedEnd);
+    } else {
+      setCreateStart(normalisedStart);
+      setCreateEnd(normalisedEnd);
+    }
+  };
+
+  const handleSpectrogramPointerUp = (event) => {
+    const drag = spectrogramDragRef.current;
+
+    if (!drag.isDragging) return;
+
+    event.currentTarget.releasePointerCapture?.(
+      event.pointerId
+    );
+
+    spectrogramDragRef.current = {
+      isDragging: false,
+      anchorTime: 0,
+      region: null,
+    };
+  };
+
+  const handleSpectrogramPointerCancel = () => {
+    spectrogramDragRef.current = {
+      isDragging: false,
+      anchorTime: 0,
+      region: null,
+    };
   };
 
   const clampToDuration = (time) => {
@@ -1960,6 +2157,22 @@ export default function AnnotationPage() {
     }
   };
 
+  const buildAnnotationHistoryRecord = ({
+    action,
+    annotationId,
+    before = null,
+    after = null,
+  }) => ({
+    action,
+    annotationId,
+    userId: currentUserId,
+    userName: currentUserName,
+    userEmail: currentUserEmail,
+    timestamp: serverTimestamp(),
+    before,
+    after,
+  });
+
   const handleCreateAnnotation = async () => {
     if (!currentUserId || !canEditAnnotations) return;
 
@@ -1992,20 +2205,50 @@ export default function AnnotationPage() {
     const overlap = findOverlap(annotations, start, end, null);
     setCreateWarning(overlap ? `Heads up — this overlaps with "${overlap.label}".` : "");
 
+    const annotationData = {
+      startTime: start,
+      endTime: end,
+      label,
+      annotationClass,
+      comment: createComment.trim(),
+      authorId: currentUserId,
+      authorName: currentUserName,
+      authorEmail: currentUserEmail,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      updatedById: currentUserId,
+    };
+
     try {
-      await addDoc(collection(db, "users", ownerId, "projects", projectId, "annotations"), {
-        startTime: start,
-        endTime: end,
-        label,
-        annotationClass,
-        comment: createComment.trim(),
-        authorId: currentUserId,
-        authorName: currentUserName,
-        authorEmail: currentUserEmail,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        updatedById: currentUserId,
-      });
+      const annotationRef = doc(
+        collection(db, "users", ownerId, "projects", projectId, "annotations")
+      );
+
+      const historyRef = doc(
+        collection(db, "users", ownerId, "projects", projectId, "annotationHistory")
+      );
+
+      const batch = writeBatch(db);
+
+      batch.set(annotationRef, annotationData);
+
+      batch.set(
+        historyRef,
+        buildAnnotationHistoryRecord({
+          action: "created",
+          annotationId: annotationRef.id,
+          before: null,
+          after: {
+            startTime: start,
+            endTime: end,
+            label,
+            annotationClass,
+            comment: createComment.trim(),
+          },
+        })
+      );
+
+      await batch.commit();
 
       if (!isMountedRef.current) return;
 
@@ -2227,21 +2470,61 @@ export default function AnnotationPage() {
     const overlap = findOverlap(annotations, start, end, selectedAnnotation.id);
     setEditWarning(overlap ? `Heads up — this overlaps with "${overlap.label}".` : "");
 
+    const beforeData = {
+      startTime: selectedAnnotation.startTime,
+      endTime: selectedAnnotation.endTime,
+      label: selectedAnnotation.label,
+      annotationClass: selectedAnnotation.annotationClass || null,
+      comment: selectedAnnotation.comment || "",
+    };
+
+    const afterData = {
+      startTime: start,
+      endTime: end,
+      label: editLabel.trim(),
+      annotationClass:
+        editAnnotationClass || {
+          name: editLabel.trim(),
+          color: "#94a3b8",
+          type: "default",
+        },
+      comment: editComment.trim(),
+    };
+
     try {
-      await updateDoc(doc(db, "users", ownerId, "projects", projectId, "annotations", selectedAnnotation.id), {
-        label: editLabel.trim(),
-        annotationClass:
-          editAnnotationClass || {
-            name: editLabel.trim(),
-            color: "#94a3b8",
-            type: "default",
-          },
-        startTime: start,
-        endTime: end,
-        comment: editComment.trim(),
+      const annotationRef = doc(
+        db,
+        "users",
+        ownerId,
+        "projects",
+        projectId,
+        "annotations",
+        selectedAnnotation.id
+      );
+
+      const historyRef = doc(
+        collection(db, "users", ownerId, "projects", projectId, "annotationHistory")
+      );
+
+      const batch = writeBatch(db);
+
+      batch.update(annotationRef, {
+        ...afterData,
         updatedAt: serverTimestamp(),
         updatedById: currentUserId,
       });
+
+      batch.set(
+        historyRef,
+        buildAnnotationHistoryRecord({
+          action: "updated",
+          annotationId: selectedAnnotation.id,
+          before: beforeData,
+          after: afterData,
+        })
+      );
+
+      await batch.commit();
 
       if (!isMountedRef.current) return;
 
@@ -2296,7 +2579,42 @@ export default function AnnotationPage() {
     if (!canEditAnnotations || !annotationToDelete) return;
 
     try {
-      await deleteDoc(doc(db, "users", ownerId, "projects", projectId, "annotations", annotationToDelete.id));
+      const annotationRef = doc(
+        db,
+        "users",
+        ownerId,
+        "projects",
+        projectId,
+        "annotations",
+        annotationToDelete.id
+      );
+
+      const historyRef = doc(
+        collection(db, "users", ownerId, "projects", projectId, "annotationHistory")
+      );
+
+      const batch = writeBatch(db);
+
+      batch.delete(annotationRef);
+
+      batch.set(
+        historyRef,
+        buildAnnotationHistoryRecord({
+          action: "deleted",
+          annotationId: annotationToDelete.id,
+          before: {
+            startTime: annotationToDelete.startTime,
+            endTime: annotationToDelete.endTime,
+            label: annotationToDelete.label,
+            annotationClass: annotationToDelete.annotationClass || null,
+            comment: annotationToDelete.comment || "",
+          },
+          after: null,
+        })
+      );
+
+      await batch.commit();
+
       if (!isMountedRef.current) return;
 
       if (exportSelectedAnnotationId === annotationToDelete.id) {
@@ -3109,7 +3427,11 @@ export default function AnnotationPage() {
               </div>
             )}
           </div>
-          <button className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 transition">
+          <button
+            type="button"
+            onClick={() => setShowLogHistory(true)}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 transition"
+          >
             <History className="h-4 w-4" /> Log History
           </button>
           {currentUserId === ownerId && (
@@ -3530,7 +3852,11 @@ export default function AnnotationPage() {
 
               <div
                 ref={spectrogramViewportRef}
-                className="w-full overflow-hidden bg-slate-950"
+                onPointerDown={handleSpectrogramPointerDown}
+                onPointerMove={handleSpectrogramPointerMove}
+                onPointerUp={handleSpectrogramPointerUp}
+                onPointerCancel={handleSpectrogramPointerCancel}
+                className="w-full cursor-crosshair overflow-hidden bg-slate-950"
               >
                 <div
                   className="relative min-w-full"
@@ -3603,9 +3929,19 @@ export default function AnnotationPage() {
                 <button
                   onClick={() => wavesurferRef.current?.playPause()}
                   disabled={!audioReady}
-                  className="rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
+                  className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-indigo-300"
                 >
-                  {isPlaying ? "⏸ Pause" : "▶ Play"}
+                  {isPlaying ? (
+                    <>
+                      <Pause className="h-4 w-4" />
+                      Pause
+                    </>
+                  ) : (
+                    <>
+                      <Play className="h-4 w-4" />
+                      Play
+                    </>
+                  )}
                 </button>
                 <button
                   onClick={handleStopPlayback}
@@ -4272,6 +4608,125 @@ export default function AnnotationPage() {
                   Done
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ADP-123: Annotation log history modal */}
+      {showLogHistory && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 p-4 backdrop-blur-sm">
+          <div className="flex max-h-[85vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-800">Annotation Log History</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  Created, edited and deleted annotation changes for this project.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowLogHistory(false)}
+                className="rounded-lg p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                aria-label="Close annotation log history"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto p-6">
+              {historyLoading ? (
+                <p className="py-10 text-center text-sm text-slate-500">Loading annotation history...</p>
+              ) : historyError ? (
+                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {historyError}
+                </div>
+              ) : annotationHistory.length === 0 ? (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">
+                  No annotation history has been recorded yet.
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-slate-200">
+                  <table className="min-w-full divide-y divide-slate-200 text-left text-sm">
+                    <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                      <tr>
+                        <th className="px-4 py-3">Date / Time</th>
+                        <th className="px-4 py-3">Action</th>
+                        <th className="px-4 py-3">User</th>
+                        <th className="px-4 py-3">Annotation</th>
+                        <th className="px-4 py-3">Change</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {annotationHistory.map((entry) => {
+                        const entryDate = entry.timestamp?.toDate?.();
+                        const displayDate = entryDate
+                          ? entryDate.toLocaleString()
+                          : "Pending timestamp";
+                        const annotationData = entry.after || entry.before || {};
+                        const actionLabel =
+                          entry.action === "created"
+                            ? "Created"
+                            : entry.action === "updated"
+                              ? "Updated"
+                              : entry.action === "deleted"
+                                ? "Deleted"
+                                : entry.action || "Unknown";
+
+                        return (
+                          <tr key={entry.id} className="align-top">
+                            <td className="whitespace-nowrap px-4 py-3 text-slate-600">
+                              {displayDate}
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
+                                {actionLabel}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-slate-600">
+                              <div className="font-medium text-slate-700">
+                                {entry.userName || entry.userEmail || "Unknown user"}
+                              </div>
+                              {entry.userName && entry.userEmail && (
+                                <div className="mt-0.5 text-xs text-slate-400">{entry.userEmail}</div>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-slate-600">
+                              <div className="font-medium text-slate-700">
+                                {annotationData.label || "Unlabelled annotation"}
+                              </div>
+                              {Number.isFinite(Number(annotationData.startTime)) &&
+                                Number.isFinite(Number(annotationData.endTime)) && (
+                                  <div className="mt-1 text-xs tabular-nums text-slate-400">
+                                    {formatTimestamp(annotationData.startTime)} → {formatTimestamp(annotationData.endTime)}
+                                  </div>
+                                )}
+                            </td>
+                            <td className="min-w-[260px] px-4 py-3 text-slate-600">
+                              {entry.action === "updated" ? (
+                                <div className="space-y-1 text-xs">
+                                  <div>
+                                    <span className="font-semibold text-slate-500">Before:</span>{" "}
+                                    {entry.before?.label || "Unlabelled"}, {formatTimestamp(entry.before?.startTime)} → {formatTimestamp(entry.before?.endTime)}
+                                  </div>
+                                  <div>
+                                    <span className="font-semibold text-slate-500">After:</span>{" "}
+                                    {entry.after?.label || "Unlabelled"}, {formatTimestamp(entry.after?.startTime)} → {formatTimestamp(entry.after?.endTime)}
+                                  </div>
+                                </div>
+                              ) : entry.action === "deleted" ? (
+                                <span className="text-xs">Annotation deleted</span>
+                              ) : (
+                                <span className="text-xs">Annotation created</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         </div>
