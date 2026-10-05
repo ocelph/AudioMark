@@ -855,10 +855,10 @@ export default function AnnotationPage() {
   const regionsRef = useRef(null);
   const activeRegionRef = useRef(null);
   const spectrogramDragRef = useRef({
-  isDragging: false,
-  anchorTime: 0,
-  region: null,
-});
+    isDragging: false,
+    anchorTime: 0,
+    region: null,
+  });
   const syncingRegionRef = useRef(false);
   const editingRegionRef = useRef(false);
   const activeEditLockRef = useRef(null);
@@ -1735,7 +1735,7 @@ export default function AnnotationPage() {
     applyZoomLevel(nextLevel);
   };
 
-    const getSpectrogramTimeFromPointer = (event) => {
+  const getSpectrogramTimeFromPointer = (event) => {
     const viewport = spectrogramViewportRef.current;
 
     if (!viewport || duration <= 0) {
@@ -3507,7 +3507,7 @@ export default function AnnotationPage() {
       {/* Main content */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left panel — create annotation */}
-        <div style={{ width: leftWidth }} className="flex-shrink-0 overflow-y-auto border-r border-slate-200 bg-white px-4 py-4">
+        <div style={{ width: leftWidth }} className={`${isEditing ? "hidden" : ""} flex-shrink-0 overflow-y-auto border-r border-slate-200 bg-white px-4 py-4`}>
           <h2 className="mb-3 text-sm font-semibold text-slate-700">Timestamps</h2>
           <div className="mb-4 space-y-3">
             <TimestampInput
@@ -3528,227 +3528,227 @@ export default function AnnotationPage() {
 
           {canEditAnnotations && (
             <>
-          <h2 className="mb-2 mt-2 text-sm font-semibold text-slate-700">Annotation Class</h2>
+              <h2 className="mb-2 mt-2 text-sm font-semibold text-slate-700">Annotation Class</h2>
 
-          <div className="mb-2 flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5 focus-within:ring-2 focus-within:ring-indigo-200">
-            <Search className="h-4 w-4 flex-shrink-0 text-slate-400" />
-            <input
-              value={classSearch}
-              onChange={(e) => setClassSearch(e.target.value)}
-              placeholder="Search or select label"
-              className="w-full text-sm outline-none"
-            />
-            {classSearch && (
+              <div className="mb-2 flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1.5 focus-within:ring-2 focus-within:ring-indigo-200">
+                <Search className="h-4 w-4 flex-shrink-0 text-slate-400" />
+                <input
+                  value={classSearch}
+                  onChange={(e) => setClassSearch(e.target.value)}
+                  placeholder="Search or select label"
+                  className="w-full text-sm outline-none"
+                />
+                {classSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setClassSearch("")}
+                    className="rounded p-0.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                    aria-label="Clear label search"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+
+              <div className="mb-2 flex flex-col gap-1">
+                {filteredDefaultClasses.map((annotationClass) => {
+                  const isSelected = selectedClassType === annotationClass.name;
+                  const customSummary =
+                    annotationClass.name === "Custom Label" && selectedCustomLabel
+                      ? selectedCustomLabel.name
+                      : null;
+                  const miscellaneousSummary =
+                    annotationClass.name === "Others" && selectedMiscellaneousLabel
+                      ? selectedMiscellaneousLabel.name
+                      : null;
+
+                  return (
+                    <button
+                      key={annotationClass.name}
+                      type="button"
+                      onClick={() => handleSelectClassType(annotationClass.name)}
+                      className={`flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm transition ${isSelected
+                        ? "bg-indigo-50 text-indigo-700"
+                        : "text-slate-700 hover:bg-slate-50"
+                        }`}
+                    >
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span
+                          className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                          style={{
+                            backgroundColor:
+                              annotationClass.name === "Custom Label" && selectedCustomLabel
+                                ? selectedCustomLabel.color || annotationClass.color
+                                : annotationClass.color,
+                          }}
+                        />
+                        <span>{annotationClass.name}</span>
+                      </span>
+
+                      {(customSummary || miscellaneousSummary) && (
+                        <span className="max-w-[120px] truncate text-xs text-indigo-500">
+                          {customSummary || miscellaneousSummary}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+
+                {filteredCustomLabels.map((label) => {
+                  const isSelected =
+                    selectedClassType === "Custom Label" && selectedCustomLabelId === label.id;
+
+                  return (
+                    <button
+                      key={label.id}
+                      type="button"
+                      onClick={() => {
+                        handleSelectCustomLabel(label);
+                        setClassSearch("");
+                      }}
+                      className={`flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm transition ${isSelected
+                        ? "bg-indigo-50 text-indigo-700"
+                        : "text-slate-700 hover:bg-slate-50"
+                        }`}
+                    >
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span
+                          className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                          style={{ backgroundColor: label.color || "#3b82f6" }}
+                        />
+                        <span className="truncate">{label.name}</span>
+                      </span>
+                      <span className="text-[10px] uppercase tracking-wide text-slate-400">Custom</span>
+                    </button>
+                  );
+                })}
+
+                {normalizedClassSearch &&
+                  filteredDefaultClasses.length === 0 &&
+                  filteredCustomLabels.length === 0 && (
+                    <p className="px-2 py-2 text-xs text-slate-400">No matching labels.</p>
+                  )}
+              </div>
+
               <button
                 type="button"
-                onClick={() => setClassSearch("")}
-                className="rounded p-0.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
-                aria-label="Clear label search"
+                onClick={() => {
+                  setSelectedClassType("Custom Label");
+                  setSelectedMiscellaneousLabel(null);
+                  openCustomLabelModal("create");
+                }}
+                className="mb-3 flex w-full items-center justify-between gap-2 rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-sm text-slate-500 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600"
               >
-                <X className="h-3.5 w-3.5" />
+                <span className="flex items-center gap-2">
+                  <Plus className="h-4 w-4" />
+                  Create New Label
+                </span>
+                <span className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white">
+                  <Plus className="h-4 w-4" />
+                </span>
               </button>
-            )}
-          </div>
 
-          <div className="mb-2 flex flex-col gap-1">
-            {filteredDefaultClasses.map((annotationClass) => {
-              const isSelected = selectedClassType === annotationClass.name;
-              const customSummary =
-                annotationClass.name === "Custom Label" && selectedCustomLabel
-                  ? selectedCustomLabel.name
-                  : null;
-              const miscellaneousSummary =
-                annotationClass.name === "Others" && selectedMiscellaneousLabel
-                  ? selectedMiscellaneousLabel.name
-                  : null;
-
-              return (
-                <button
-                  key={annotationClass.name}
-                  type="button"
-                  onClick={() => handleSelectClassType(annotationClass.name)}
-                  className={`flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm transition ${isSelected
-                    ? "bg-indigo-50 text-indigo-700"
-                    : "text-slate-700 hover:bg-slate-50"
+              {selectedClassType === "Custom Label" && selectedCustomLabel && (
+                <div
+                  className={`mb-4 rounded-lg border px-3 py-2 ${createErrors.label ? "border-red-300 bg-red-50" : "border-slate-200 bg-slate-50"
                     }`}
                 >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span
-                      className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
-                      style={{
-                        backgroundColor:
-                          annotationClass.name === "Custom Label" && selectedCustomLabel
-                            ? selectedCustomLabel.color || annotationClass.color
-                            : annotationClass.color,
-                      }}
-                    />
-                    <span>{annotationClass.name}</span>
-                  </span>
-
-                  {(customSummary || miscellaneousSummary) && (
-                    <span className="max-w-[120px] truncate text-xs text-indigo-500">
-                      {customSummary || miscellaneousSummary}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-
-            {filteredCustomLabels.map((label) => {
-              const isSelected =
-                selectedClassType === "Custom Label" && selectedCustomLabelId === label.id;
-
-              return (
-                <button
-                  key={label.id}
-                  type="button"
-                  onClick={() => {
-                    handleSelectCustomLabel(label);
-                    setClassSearch("");
-                  }}
-                  className={`flex items-center justify-between gap-3 rounded-lg px-2 py-2 text-left text-sm transition ${isSelected
-                    ? "bg-indigo-50 text-indigo-700"
-                    : "text-slate-700 hover:bg-slate-50"
-                    }`}
-                >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span
-                      className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
-                      style={{ backgroundColor: label.color || "#3b82f6" }}
-                    />
-                    <span className="truncate">{label.name}</span>
-                  </span>
-                  <span className="text-[10px] uppercase tracking-wide text-slate-400">Custom</span>
-                </button>
-              );
-            })}
-
-            {normalizedClassSearch &&
-              filteredDefaultClasses.length === 0 &&
-              filteredCustomLabels.length === 0 && (
-                <p className="px-2 py-2 text-xs text-slate-400">No matching labels.</p>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                        Selected custom label
+                      </p>
+                      <div className="mt-1 flex items-center gap-2">
+                        <span
+                          className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
+                          style={{ backgroundColor: selectedCustomLabel.color || "#3b82f6" }}
+                        />
+                        <span className="truncate text-sm font-medium text-slate-700">
+                          {selectedCustomLabel.name}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => openCustomLabelModal("create")}
+                      className="flex-shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
+                    >
+                      Change
+                    </button>
+                  </div>
+                </div>
               )}
-          </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              setSelectedClassType("Custom Label");
-              setSelectedMiscellaneousLabel(null);
-              openCustomLabelModal("create");
-            }}
-            className="mb-3 flex w-full items-center justify-between gap-2 rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-sm text-slate-500 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600"
-          >
-            <span className="flex items-center gap-2">
-              <Plus className="h-4 w-4" />
-              Create New Label
-            </span>
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white">
-              <Plus className="h-4 w-4" />
-            </span>
-          </button>
-
-          {selectedClassType === "Custom Label" && selectedCustomLabel && (
-            <div
-              className={`mb-4 rounded-lg border px-3 py-2 ${createErrors.label ? "border-red-300 bg-red-50" : "border-slate-200 bg-slate-50"
-                }`}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
-                    Selected custom label
-                  </p>
-                  <div className="mt-1 flex items-center gap-2">
-                    <span
-                      className="h-2.5 w-2.5 flex-shrink-0 rounded-full"
-                      style={{ backgroundColor: selectedCustomLabel.color || "#3b82f6" }}
-                    />
-                    <span className="truncate text-sm font-medium text-slate-700">
-                      {selectedCustomLabel.name}
-                    </span>
+              {selectedClassType === "Others" && selectedMiscellaneousLabel && (
+                <div
+                  className={`mb-4 rounded-lg border px-3 py-2 ${createErrors.label ? "border-red-300 bg-red-50" : "border-slate-200 bg-slate-50"
+                    }`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                        Selected predefined sound
+                      </p>
+                      <div className="mt-1 flex items-center gap-2">
+                        <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full bg-orange-500" />
+                        <span className="truncate text-sm font-medium text-slate-700">
+                          {selectedMiscellaneousLabel.name}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { setMiscellaneousModalMode("create"); setShowMiscellaneousModal(true); }}
+                      className="flex-shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
+                    >
+                      Change
+                    </button>
                   </div>
                 </div>
+              )}
+
+              {createErrors.label && (
+                <p className="mb-2 text-xs text-red-500">{createErrors.label}</p>
+              )}
+
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <label className="block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
                 <button
                   type="button"
-                  onClick={() => openCustomLabelModal("create")}
-                  className="flex-shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
+                  onClick={() => setExpandedCommentMode("create")}
+                  className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-indigo-600 transition hover:bg-indigo-50"
                 >
-                  Change
+                  <Maximize2 className="h-3.5 w-3.5" />
+                  Expand
                 </button>
               </div>
-            </div>
-          )}
-
-          {selectedClassType === "Others" && selectedMiscellaneousLabel && (
-            <div
-              className={`mb-4 rounded-lg border px-3 py-2 ${createErrors.label ? "border-red-300 bg-red-50" : "border-slate-200 bg-slate-50"
-                }`}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
-                    Selected predefined sound
-                  </p>
-                  <div className="mt-1 flex items-center gap-2">
-                    <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full bg-orange-500" />
-                    <span className="truncate text-sm font-medium text-slate-700">
-                      {selectedMiscellaneousLabel.name}
-                    </span>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => { setMiscellaneousModalMode("create"); setShowMiscellaneousModal(true); }}
-                  className="flex-shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
-                >
-                  Change
-                </button>
+              <textarea
+                value={createComment}
+                onChange={(e) => setCreateComment(e.target.value)}
+                maxLength={2000}
+                className={`mb-1 min-h-[260px] w-full resize-y rounded-lg border px-3 py-2 text-sm leading-6 outline-none focus:ring-2 focus:ring-indigo-300 ${createErrors.comment ? "border-red-400" : "border-slate-200"
+                  }`}
+                placeholder="Add a detailed note about this annotation..."
+              />
+              <div className="mb-2 flex items-center justify-between gap-2">
+                {createErrors.comment ? (
+                  <p className="text-xs text-red-500">{createErrors.comment}</p>
+                ) : (
+                  <span />
+                )}
+                <span className="text-xs tabular-nums text-slate-400">{createComment.length} / 2000</span>
               </div>
-            </div>
-          )}
+              {createWarning && <p className="mb-2 text-xs text-amber-600">{createWarning}</p>}
 
-          {createErrors.label && (
-            <p className="mb-2 text-xs text-red-500">{createErrors.label}</p>
-          )}
-
-          <div className="mb-1 flex items-center justify-between gap-2">
-            <label className="block text-xs font-medium uppercase tracking-wide text-slate-400">Comments</label>
-            <button
-              type="button"
-              onClick={() => setExpandedCommentMode("create")}
-              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-indigo-600 transition hover:bg-indigo-50"
-            >
-              <Maximize2 className="h-3.5 w-3.5" />
-              Expand
-            </button>
-          </div>
-          <textarea
-            value={createComment}
-            onChange={(e) => setCreateComment(e.target.value)}
-            maxLength={2000}
-            className={`mb-1 min-h-[260px] w-full resize-y rounded-lg border px-3 py-2 text-sm leading-6 outline-none focus:ring-2 focus:ring-indigo-300 ${createErrors.comment ? "border-red-400" : "border-slate-200"
-              }`}
-            placeholder="Add a detailed note about this annotation..."
-          />
-          <div className="mb-2 flex items-center justify-between gap-2">
-            {createErrors.comment ? (
-              <p className="text-xs text-red-500">{createErrors.comment}</p>
-            ) : (
-              <span />
-            )}
-            <span className="text-xs tabular-nums text-slate-400">{createComment.length} / 2000</span>
-          </div>
-          {createWarning && <p className="mb-2 text-xs text-amber-600">{createWarning}</p>}
-
-          <button
-            onClick={handleCreateAnnotation}
-            className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition"
-          >
-            Save Annotation
-          </button>
-          <p className="mt-2 text-xs text-slate-400">
-            Drag across the waveform to populate the timestamps, then refine them here if needed.
-          </p>
+              <button
+                onClick={handleCreateAnnotation}
+                className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-700 transition"
+              >
+                Save Annotation
+              </button>
+              <p className="mt-2 text-xs text-slate-400">
+                Drag across the waveform to populate the timestamps, then refine them here if needed.
+              </p>
             </>
           )}
           {!canEditAnnotations && (
@@ -3761,7 +3761,7 @@ export default function AnnotationPage() {
         {/* Drag handle — resize left panel */}
         <div
           onMouseDown={() => (resizingRef.current = "left")}
-          className="w-1.5 flex-shrink-0 cursor-col-resize bg-slate-100 hover:bg-indigo-200 transition"
+          className={`${isEditing ? "hidden" : ""} w-1.5 flex-shrink-0 cursor-col-resize bg-slate-100 hover:bg-indigo-200 transition`}
         />
 
         {/* Center — waveform + annotation list */}
@@ -4112,14 +4112,17 @@ export default function AnnotationPage() {
 
         {selectedAnnotation && isEditing && (
           <>
-            {/* Drag handle — resize edit panel */}
+            {/* Edit panel resize handle — occupies the same left-side slot as Add */}
             <div
               onMouseDown={() => (resizingRef.current = "left")}
               className="order-[-1] w-1.5 flex-shrink-0 cursor-col-resize bg-slate-100 hover:bg-indigo-200 transition"
             />
 
-            {/* Edit mode uses the same left-side panel position */}
-            <div style={{ width: leftWidth }} className="order-[-2] flex-shrink-0 overflow-y-auto border-r border-slate-200 bg-white px-4 py-4">
+            {/* Edit replaces Add in the same left position and uses the same width */}
+            <div
+              style={{ width: leftWidth }}
+              className="order-[-2] flex-shrink-0 overflow-y-auto border-r border-slate-200 bg-white px-4 py-4"
+            >
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-slate-700">Edit Annotation</h2>
                 <button onClick={handleClosePanel} className="text-slate-400 hover:text-slate-600 transition" aria-label="Close edit panel">
