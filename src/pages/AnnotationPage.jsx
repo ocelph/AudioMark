@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { auth, db, realtimeDb } from "../services/firebase";
-import { doc, getDoc, collection, addDoc, serverTimestamp, onSnapshot, query, orderBy, writeBatch } from "firebase/firestore";
+import { doc, getDoc, collection, addDoc, updateDoc, serverTimestamp, onSnapshot, query, orderBy, writeBatch } from "firebase/firestore";
 import { ref as databaseRef, onValue, onDisconnect, set, remove, runTransaction as runRealtimeTransaction, serverTimestamp as realtimeServerTimestamp } from "firebase/database";
 import WaveSurfer from "wavesurfer.js";
 import RegionsPlugin from "wavesurfer.js/dist/plugins/regions.js";
