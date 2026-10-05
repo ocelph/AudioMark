@@ -1079,6 +1079,53 @@ export default function AnnotationPage() {
     loadProject();
   }, [ownerId, projectId, navigate]);
 
+  useEffect(() => {
+    if (!currentUserId || !ownerId || !projectId) return;
+
+    const projectRef = doc(db, "users", ownerId, "projects", projectId);
+    const unsubscribe = onSnapshot(
+      projectRef,
+      (projectSnap) => {
+        if (!isMountedRef.current) return;
+        if (!projectSnap.exists()) {
+          setError("Project not found.");
+          return;
+        }
+
+        const data = projectSnap.data();
+        const nextSharedWith = Array.isArray(data.shared_with) ? data.shared_with : [];
+        const nextPermissions = Array.isArray(data.shared_permissions)
+          ? data.shared_permissions
+          : [];
+        const normalizedEmail = currentUserEmail.toLowerCase();
+        const permission = nextPermissions.find(
+          (item) => item.email?.toLowerCase() === normalizedEmail
+        );
+
+        setFileName(data.project_title || "");
+        setAudioUrl(data.download_url || null);
+        setSharedWith(nextSharedWith);
+        setSharedPermissions(nextPermissions);
+        setProjectRole(
+          currentUserId === ownerId
+            ? "editor"
+            : permission?.role || "viewer"
+        );
+      },
+      (snapshotError) => {
+        console.error("Failed to refresh project permissions:", snapshotError);
+        if (!isMountedRef.current) return;
+        if (currentUserId !== ownerId) setProjectRole("viewer");
+        setSyncStatus("error");
+        setSyncMessage(
+          "Project permissions could not be refreshed. Editing is disabled until the project reconnects."
+        );
+      }
+    );
+
+    return () => unsubscribe();
+  }, [currentUserId, currentUserEmail, ownerId, projectId]);
+
   // Track users who are currently viewing this annotation project.
   useEffect(() => {
     if (!currentUserId || !ownerId || !projectId) return;
